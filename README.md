@@ -27,6 +27,7 @@ tp4_simulacion/
 ├── core/                      # Motor de simulación (DES)
 │   ├── event.py               # Clase abstracta Event
 │   ├── fel.py                 # Future Event List (heap de prioridad)
+│   ├── rng.py                 # Generador de números pseudoaleatorios con traza de RND
 │   ├── simulation.py          # Clase Simulation: bucle principal, RNG, config
 │   └── state.py               # Vector de estado global (SimulationState)
 │
@@ -138,13 +139,13 @@ Iniciando simulación (seed maestra=42, día=1)...
 ============================================================
   RESULTADOS DE LA SIMULACIÓN - RTV
 ============================================================
-  Hora de fin de jornada:           16:27 (987.07 min)
-  Tiempo promedio espera autos:      0.2450 min
-  Tiempo promedio espera camionetas: 0.3201 min
-  Autos atendidos:                  35
-  Camionetas atendidas:             18
-  Bloqueo Frenos Línea 1:           3.45%
-  Bloqueo Frenos Línea 2:           2.12%
+  Hora de fin de jornada:           16:47 (1007.58 min)
+  Tiempo promedio espera autos:      0.0388 min
+  Tiempo promedio espera camionetas: 0.2172 min
+  Autos atendidos:                  22
+  Camionetas atendidas:              16
+  Bloqueo Frenos Línea 1:            2.92%
+  Bloqueo Frenos Línea 2:            0.08%
 ============================================================
 
 Vector de estado guardado en: output/vector_de_estado.csv
@@ -152,28 +153,42 @@ Vector de estado guardado en: output/vector_de_estado.csv
 
 ### CSV (`output/vector_de_estado.csv`)
 
-El CSV tiene **columnas fijas** con el estado completo del sistema en cada transición:
+El CSV tiene **columnas fijas** con el estado completo del sistema en cada transición, incluyendo las columnas de variables aleatorias (`RND_*` y `Tiempo_*`) asociadas al evento en la misma fila (se muestran vacías en los eventos donde no se muestrearon):
 
-| Columna                | Descripción                                                    |
-|------------------------|----------------------------------------------------------------|
-| `Evento`               | Nombre del evento procesado                                    |
-| `Reloj_min`            | Instante del reloj de simulación (minutos)                     |
-| `Prox_Llegada_Auto`    | Minuto programado de la próxima llegada de auto                |
-| `Prox_Llegada_Camioneta` | Minuto programado de la próxima llegada de camioneta         |
-| `Cola_Autos`           | Cantidad de autos en espera                                    |
-| `Cola_Camionetas`      | Cantidad de camionetas en espera                               |
-| `Estado_Frenos_L1/L2`  | Estado de Frenos de la línea (Libre / Ocupado / Bloqueado)     |
-| `Vehiculo_Frenos_L1/L2`| ID del vehículo en Frenos (vacío si libre)                     |
-| `Fin_Atencion_Frenos_L1/L2` | Minuto de fin de servicio programado en Frenos            |
-| `Estado_Luces_L1/L2`   | Estado de Luces (Libre / Ocupado)                              |
-| `Vehiculo_Luces_L1/L2` | ID del vehículo en Luces (vacío si libre)                      |
-| `Fin_Atencion_Luces_L1/L2` | Minuto de fin de servicio programado en Luces             |
-| `Cant_Autos_Atendidos` | Autos atendidos hasta este instante                            |
-| `Cant_Camionetas_Atendidas` | Camionetas atendidas hasta este instante                  |
-| `Acum_Espera_Autos`    | Suma acumulada de tiempos de espera de autos (min)             |
-| `Acum_Espera_Camionetas` | Suma acumulada de tiempos de espera de camionetas (min)      |
-| `Acum_Bloqueo_Frenos_L1/L2` | Tiempo total bloqueado en Frenos por línea (min)         |
-| `Clientes_Activos`     | Vehículos activos en sistema (serializado): `[ID:X, Tipo, Estado, L:N]; ...` |
+| Columna | Descripción |
+| :--- | :--- |
+| `Evento` | Nombre del evento procesado |
+| `Reloj_min` | Instante del reloj de simulación (minutos) |
+| **Llegada Auto** | |
+| `RND_Llegada_Auto` | Número uniforme $U(0,1)$ usado para el tiempo de arribo de autos |
+| `Tiempo_Entre_Llegadas_Auto` | Tiempo entre llegadas generado (exponencial) |
+| `Prox_Llegada_Auto` | Minuto programado para la próxima llegada de auto |
+| **Llegada Camioneta** | |
+| `RND_Llegada_Camioneta` | Número uniforme $U(0,1)$ usado para el tiempo de arribo de camionetas |
+| `Tiempo_Entre_Llegadas_Camioneta` | Tiempo entre llegadas generado (exponencial) |
+| `Prox_Llegada_Camioneta` | Minuto programado para la próxima llegada de camioneta |
+| **Colas** | |
+| `Cola_Autos` | Cantidad de autos en cola de entrada |
+| `Cola_Camionetas` | Cantidad de camionetas en cola de entrada (prioritarias) |
+| **Líneas de Inspección ($i \in \{1, 2\}$)** | |
+| `RND_Frenos_L{i}` | Número uniforme $U(0,1)$ usado para el tiempo de Frenos de la línea $i$ |
+| `Tiempo_Frenos_L{i}` | Tiempo de revisión en Frenos generado ($U(4,7)$) |
+| `Estado_Frenos_L{i}` | Estado de la estación de Frenos de la línea $i$ (`Libre`, `Ocupado`, `Bloqueado`) |
+| `Vehiculo_Frenos_L{i}` | ID del vehículo actualmente en la estación de Frenos |
+| `Fin_Atencion_Frenos_L{i}` | Minuto de fin de atención programado para la estación de Frenos |
+| `RND_Luces_L{i}` | Número uniforme $U(0,1)$ usado para el tiempo de Luces de la línea $i$ |
+| `Tiempo_Luces_L{i}` | Tiempo de revisión en Luces generado ($U(6,10)$) |
+| `Estado_Luces_L{i}` | Estado de la estación de Luces de la línea $i$ (`Libre`, `Ocupado`) |
+| `Vehiculo_Luces_L{i}` | ID del vehículo actualmente en la estación de Luces |
+| `Fin_Atencion_Luces_L{i}` | Minuto de fin de atención programado para la estación de Luces |
+| **Estadísticas Acumuladas** | |
+| `Cant_Autos_Atendidos` | Cantidad total de autos que finalizaron la revisión técnica |
+| `Cant_Camionetas_Atendidas` | Cantidad total de camionetas que finalizaron la revisión técnica |
+| `Acum_Espera_Autos` | Suma acumulada de los tiempos de espera en cola de autos (minutos) |
+| `Acum_Espera_Camionetas` | Suma acumulada de los tiempos de espera en cola de camionetas (minutos) |
+| `Acum_Bloqueo_Frenos_L{i}` | Tiempo acumulado en que la estación de Frenos de la línea $i$ estuvo bloqueada |
+| **Estado del Sistema** | |
+| `Clientes_Activos` | Snapshot serializado de vehículos activos: `[ID:X, Tipo, Estado, L:N]; ...` (Opción A) |
 
 ---
 
