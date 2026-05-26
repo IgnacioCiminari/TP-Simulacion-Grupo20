@@ -83,6 +83,8 @@ class CsvExporter:
         self._file = None
         self._writer = None
         self._num_lineas: int = 2  # se actualiza en write_header
+        self.headers: list[str] = []   # cabeceras del CSV
+        self.rows: list[dict] = []     # vector de estado en memoria (para la API)
 
     def write_header(self, state: "SimulationState", config: "SimulationConfig") -> None:
         """Crea el archivo de salida y escribe la fila de encabezados."""
@@ -104,6 +106,8 @@ class CsvExporter:
             header.append(f"Acum_Bloqueo_Frenos_L{i}")
 
         header.extend(_HEADER_CLIENTES)
+        self.headers = header          # guardar para el mapeo en memoria
+        self.rows = []                 # reiniciar vector de estado en memoria
         self._writer.writerow(header)
 
     def write_row(
@@ -168,6 +172,8 @@ class CsvExporter:
         row.append(state.snapshot_active_vehicles())
 
         self._writer.writerow(row)
+        # Acumular en memoria como dict para slicing O(1) en la API
+        self.rows.append(dict(zip(self.headers, row)))
 
     def close(self) -> None:
         """Cierra el archivo CSV."""

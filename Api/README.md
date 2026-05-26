@@ -77,7 +77,29 @@ Desde la raíz del proyecto:
 uv sync
 ```
 
-### 3. Correr la simulación
+### 3. Correr la API de Simulación (FastAPI)
+
+Para interactuar con la simulación vía API REST y consultar los resultados paginados en formato JSON:
+
+```powershell
+uv run uvicorn api:app --reload
+```
+
+La API estará disponible en `http://127.0.0.1:8000`. Podés ver la documentación interactiva (Swagger) en `http://127.0.0.1:8000/docs`.
+
+### 4. Endpoints de la API
+
+- **`POST /simulacion`**: Ejecuta una nueva simulación (reemplaza la anterior) y devuelve las estadísticas de resumen y la primera página de registros.
+  - Query Params: `offset` (default: 0), `limit` (default: 50).
+  - Body (opcional): JSON con los parámetros de la simulación.
+- **`GET /simulacion`**: Consulta los registros paginados de la simulación activa (la última ejecutada con POST).
+  - Query Params: `offset` (default: 0), `limit` (default: 50).
+
+> **Nota:** La simulación también sigue guardando el archivo físico `.csv` completo en `output/vector_de_estado.csv` tras cada ejecución.
+
+### 5. Correr por Consola (Script Original)
+
+Si querés correr una simulación aislada desde la consola sin levantar el servidor API:
 
 ```powershell
 uv run main.py
@@ -85,7 +107,7 @@ uv run main.py
 
 Esto genera el archivo `output/vector_de_estado.csv` y muestra el reporte en la terminal.
 
-### 4. Correr los tests
+### 6. Correr los tests
 
 ```powershell
 uv run pytest tests/ -v
