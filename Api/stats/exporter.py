@@ -52,9 +52,11 @@ _HEADER_PER_LINE = [
 _HEADER_STATS = [
     "Cant_Autos_Atendidos",
     "Cant_Camionetas_Atendidas",
+    "Tiempo_Espera_Auto",
     "Acum_Espera_Autos",
+    "Tiempo_Espera_Camioneta",
     "Acum_Espera_Camionetas",
-    # Bloqueo por línea se agrega dinámicamente
+    # Bloqueo por línea se agrega dinámicamente (Tiempo_Bloqueo_Li, Acum_Bloqueo_Li)
 ]
 
 _HEADER_CLIENTES = ["Clientes_Activos"]
@@ -103,6 +105,7 @@ class CsvExporter:
         # Estadísticas fijas
         header.extend(_HEADER_STATS)
         for i in range(1, self._num_lineas + 1):
+            header.append(f"Tiempo_Bloqueo_L{i}")
             header.append(f"Acum_Bloqueo_Frenos_L{i}")
 
         header.extend(_HEADER_CLIENTES)
@@ -163,9 +166,12 @@ class CsvExporter:
         # ── Estadísticas acumuladas ───────────────────────────────────────
         row.append(str(state.count_autos_atendidos))
         row.append(str(state.count_camionetas_atendidas))
+        row.append(_fmt(row_context.get("tiempo_espera_auto"), 4))
         row.append(_fmt(state.total_espera_autos))
+        row.append(_fmt(row_context.get("tiempo_espera_camioneta"), 4))
         row.append(_fmt(state.total_espera_camionetas))
         for line in state.lines:
+            row.append(_fmt(row_context.get(f"tiempo_bloqueo_l{line.id}"), 4))
             row.append(_fmt(tracker.acum_bloqueo_frenos.get(line.id, 0.0)))
 
         # ── Clientes activos serializados (Opción A) ──────────────────────

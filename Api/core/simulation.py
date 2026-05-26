@@ -53,6 +53,7 @@ class SimulationConfig:
 
 # Claves del row_context para cada variable aleatoria muestreada
 # Formato: {"rnd_<var>": float | None, "tiempo_<var>": float | None}
+# También incluye claves para tiempos de espera y bloqueo del evento actual.
 _CONTEXT_KEYS = [
     "rnd_llegada_auto",
     "tiempo_llegada_auto",
@@ -66,6 +67,12 @@ _CONTEXT_KEYS = [
     "tiempo_frenos_l2",
     "rnd_luces_l2",
     "tiempo_luces_l2",
+    # Tiempo de espera del vehículo servido en este evento (por tipo)
+    "tiempo_espera_auto",
+    "tiempo_espera_camioneta",
+    # Tiempo de bloqueo liberado en este evento (por línea)
+    "tiempo_bloqueo_l1",
+    "tiempo_bloqueo_l2",
 ]
 
 

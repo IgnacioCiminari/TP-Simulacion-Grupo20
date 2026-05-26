@@ -56,9 +56,11 @@ class FinRevisionLuces(Event):
             if exiting_vehicle.tipo.value == "Auto":
                 state.total_espera_autos += wait
                 state.count_autos_atendidos += 1
+                sim.row_context["tiempo_espera_auto"] = wait
             else:
                 state.total_espera_camionetas += wait
                 state.count_camionetas_atendidas += 1
+                sim.row_context["tiempo_espera_camioneta"] = wait
 
         luces.set_free()
 
@@ -67,12 +69,13 @@ class FinRevisionLuces(Event):
             # Desbloquear: el vehículo bloqueado pasa a Luces
             blocked_vehicle = frenos.unblock(state.clock)
 
-            # Acumular tiempo de bloqueo en el tracker
+            # Acumular tiempo de bloqueo en el tracker y registrar en el contexto
             if blocked_vehicle.hora_inicio_bloqueo is not None:
                 bloqueo = state.clock - blocked_vehicle.hora_inicio_bloqueo
                 sim.tracker.acum_bloqueo_frenos[line.id] = (
                     sim.tracker.acum_bloqueo_frenos.get(line.id, 0.0) + bloqueo
                 )
+                sim.row_context[f"tiempo_bloqueo_l{line.id}"] = bloqueo
 
             # Mover el vehículo bloqueado a Luces.
             # line_id se pasa para que el RND quede en la columna correcta del CSV.

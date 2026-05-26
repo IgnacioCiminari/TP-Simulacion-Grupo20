@@ -90,9 +90,11 @@ def _dequeue_to_frenos(line, sim: "Simulation") -> list[Event]:
     if next_vehicle.tipo.value == "Auto":
         state.total_espera_autos += wait_time
         state.count_autos_atendidos += 1
+        sim.row_context["tiempo_espera_auto"] = wait_time
     else:
         state.total_espera_camionetas += wait_time
         state.count_camionetas_atendidas += 1
+        sim.row_context["tiempo_espera_camioneta"] = wait_time
     next_vehicle._already_counted = True
 
     # Enviar el vehículo a Frenos.

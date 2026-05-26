@@ -73,21 +73,27 @@ class SimulationState:
         """
         Serializa el estado de todos los vehículos activos en el sistema
         (tanto en colas como en estaciones) en formato de texto para el CSV.
-        Formato: [ID:X, Tipo, Estado, L:N]; ...
+        Formato: [Id:X, Tipo:Y, Estado:Z, Linea:N, Hora_Llegada:T, Hora_Inicio_Bloqueo:T|None]; ...
         """
         parts: list[str] = []
 
+        def _fmt_v(v, linea: int | None = None) -> str:
+            bloqueo = f"{v.hora_inicio_bloqueo:.2f}" if v.hora_inicio_bloqueo is not None else "None"
+            lin = str(linea) if linea is not None else "None"
+            return (
+                f"[Id:{v.id}, Tipo:{v.tipo.value}, Estado:{v.estado.value}, "
+                f"Linea:{lin}, Hora_Llegada:{v.hora_llegada:.2f}, "
+                f"Hora_Inicio_Bloqueo:{bloqueo}]"
+            )
+
         # Vehículos en la cola de espera
         for v in self.entry_queue.all_vehicles():
-            parts.append(f"[ID:{v.id}, {v.tipo.value}, {v.estado.value}]")
+            parts.append(_fmt_v(v, linea=None))
 
         # Vehículos en estaciones
         for line in self.lines:
             for station in (line.frenos, line.luces):
                 if station.current_vehicle is not None:
-                    v = station.current_vehicle
-                    parts.append(
-                        f"[ID:{v.id}, {v.tipo.value}, {v.estado.value}, L:{line.id}]"
-                    )
+                    parts.append(_fmt_v(station.current_vehicle, linea=line.id))
 
         return "; ".join(parts) if parts else ""

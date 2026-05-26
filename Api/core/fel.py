@@ -31,6 +31,17 @@ class EventQueue:
             return self._heap[0][2]
         return None
 
+    def remove_by_type(self, event_type: type) -> int:
+        """
+        Elimina todos los eventos de la FEL cuyo tipo sea exactamente `event_type`.
+        Reconstruye el heap tras la eliminación.
+        Devuelve la cantidad de eventos eliminados.
+        """
+        original_len = len(self._heap)
+        self._heap = [item for item in self._heap if not isinstance(item[2], event_type)]
+        heapq.heapify(self._heap)
+        return original_len - len(self._heap)
+
     def __len__(self) -> int:
         return len(self._heap)
 

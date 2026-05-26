@@ -26,8 +26,16 @@ class CierrePuertas(Event):
         return "Cierre de Puertas"
 
     def process(self, sim: "Simulation") -> list[Event]:
+        from events.llegada_auto import LlegadaAuto
+        from events.llegada_camioneta import LlegadaCamioneta
+
         sim.state.puertas_abiertas = False
         sim.state.prox_llegada_auto = None
         sim.state.prox_llegada_camioneta = None
+
+        # Eliminar de la FEL los eventos de llegada ya agendados pero aún no procesados.
+        sim.fel.remove_by_type(LlegadaAuto)
+        sim.fel.remove_by_type(LlegadaCamioneta)
+
         # No genera eventos nuevos; la simulación sigue con los eventos ya agendados.
         return []
