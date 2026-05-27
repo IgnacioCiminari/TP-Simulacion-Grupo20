@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from core.event import Event
 from core.fel import EventQueue
@@ -47,8 +47,21 @@ class SimulationConfig:
     # Usar None para generación aleatoria real
     master_seed: int | None = 42
 
-    # Índice de corrida (día) — usado para derivar seed determinístico por día
-    run_index: int = 1
+    # ── Condiciones de corte ────────────────────────────────────────────────
+    # La simulación se detiene cuando se cumple CUALQUIERA de las dos condiciones.
+    # max_dias:       detiene después de completar exactamente ese número de días.
+    # max_iteraciones: detiene después de que el total de iteraciones (filas del
+    #                  vector de estado) supere este umbral; siempre se completa
+    #                  el día en curso antes de cortar.
+    max_dias: int = 10
+    max_iteraciones: int = 1_000
+
+
+class DayResult(NamedTuple):
+    """Encapsula los resultados de un día de simulación."""
+    dia: int
+    tracker: StatsTracker
+    rows: list[dict]   # vector de estado del día (lista de dicts ya construida)
 
 
 # Claves del row_context para cada variable aleatoria muestreada
@@ -78,50 +91,34 @@ _CONTEXT_KEYS = [
 
 class Simulation:
     """
-    Motor de simulación por eventos discretos (DES).
+    Motor de simulación por eventos discretos (DES) con soporte multi-día.
 
     Gestiona el reloj de simulación, la FEL y el bucle principal de despacho
     de eventos. Proporciona el generador de números aleatorios (RNG) a los
     eventos a través de métodos auxiliares que registran automáticamente el
     RND base y el valor generado en `row_context` para su exportación al CSV.
+
+    La simulación se detiene cuando se cumple CUALQUIERA de las dos condiciones
+    de corte: `max_dias` o `max_iteraciones`. Si se alcanza el límite de
+    iteraciones en mitad de un día, ese día se completa antes de cortar.
     """
 
     def __init__(self, config: SimulationConfig) -> None:
         self.config = config
-
-        # Derivar seed determinística para este día de simulación
-        seed = self._derive_seed(config.master_seed, config.run_index)
-        self.rng = TrackedRandom(seed)
-
-        # Construir la infraestructura de la planta
-        lines = [
-            InspectionLine(
-                id=i + 1,
-                frenos=Station(StationType.FRENOS, line_id=i + 1),
-                luces=Station(StationType.LUCES, line_id=i + 1),
-            )
-            for i in range(config.num_lineas)
-        ]
-
-        self.state = SimulationState(lines=lines)
-        self.state.clock = config.hora_apertura
-
-        self.fel = EventQueue()
-        self.tracker = StatsTracker(config=config)
         self.exporter = CsvExporter(config.csv_output_path)
 
-        # Contexto de la fila actual: RNDs y tiempos generados durante el evento
+        # Contexto de la fila actual: RNDs y tiempos generados durante el evento.
+        # Se comparte entre días; se reinicia antes de cada evento.
         self.row_context: dict[str, float | None] = {}
-        self.reset_row_context()
 
     # ------------------------------------------------------------------
     # Derivación determinística de semillas
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _derive_seed(master_seed: int | None, run_index: int) -> int | None:
+    def _derive_seed(master_seed: int | None, dia: int) -> int | None:
         """
-        Deriva una seed determinística para una corrida dada a partir de la
+        Deriva una seed determinística para un día dado a partir de la
         semilla maestra. Para múltiples días, cada día tendrá una seed única
         pero reproducible dado el mismo master_seed.
 
@@ -129,7 +126,7 @@ class Simulation:
         """
         if master_seed is None:
             return None
-        combined = (master_seed * 6364136223846793005 + run_index) & 0xFFFFFFFFFFFFFFFF
+        combined = (master_seed * 6364136223846793005 + dia) & 0xFFFFFFFFFFFFFFFF
         return combined
 
     # ------------------------------------------------------------------
@@ -189,21 +186,37 @@ class Simulation:
         """Agenda un evento en la FEL."""
         self.fel.push(event)
 
-    def run(self) -> StatsTracker:
+    def _run_single_day(self, dia: int) -> tuple[StatsTracker, list[dict], int]:
         """
-        Ejecuta el bucle principal de la simulación hasta que la FEL quede vacía.
+        Inicializa y ejecuta un único día de simulación.
 
         Returns:
-            El tracker con las estadísticas finales de la corrida.
+            (tracker, rows, iteraciones) donde `iteraciones` es la cantidad de
+            filas escritas en el vector de estado durante ese día.
         """
         from events.llegada_auto import LlegadaAuto
         from events.llegada_camioneta import LlegadaCamioneta
         from events.cierre_puertas import CierrePuertas
 
-        # Agendar eventos iniciales (con contexto limpio para la fila de Inicialización).
-        # Se extrae cada tiempo muestreado en una variable para poder setear
-        # state.prox_llegada_* ANTES de escribir la fila de Inicialización;
-        # de lo contrario el exportador los leería como None (error de arrastre).
+        # ── Inicializar estado fresco para el día ──────────────────────────
+        seed = self._derive_seed(self.config.master_seed, dia)
+        self.rng = TrackedRandom(seed)
+
+        lines = [
+            InspectionLine(
+                id=i + 1,
+                frenos=Station(StationType.FRENOS, line_id=i + 1),
+                luces=Station(StationType.LUCES, line_id=i + 1),
+            )
+            for i in range(self.config.num_lineas)
+        ]
+        self.state = SimulationState(lines=lines)
+        self.state.clock = self.config.hora_apertura
+
+        self.fel = EventQueue()
+        self.tracker = StatsTracker(config=self.config)
+
+        # ── Agendar eventos iniciales ──────────────────────────────────────
         self.reset_row_context()
         t0 = self.config.hora_apertura
 
@@ -217,35 +230,73 @@ class Simulation:
 
         self.schedule(CierrePuertas(timestamp=self.config.hora_cierre_puertas))
 
-        # Inicializar el CSV
-        self.exporter.write_header(self.state, self.config)
+        # ── Escribir encabezado (sólo en el primer día) e inicialización ──
+        if dia == 1:
+            self.exporter.write_header(self.state, self.config)
+        self.exporter.start_day(dia)
+
         self.exporter.write_row(
             "Inicialización", self.state, self.tracker, self.config, self.fel,
-            self.row_context,
+            self.row_context, dia,
         )
 
-        # Bucle principal
+        # ── Bucle del día ──────────────────────────────────────────────────
         while self.fel:
             event = self.fel.pop()
             self.state.clock = event.timestamp
-
-            # Limpiar el contexto antes de procesar el evento
             self.reset_row_context()
-
             new_events = event.process(self)
-
             for new_event in new_events:
                 self.schedule(new_event)
-
-            # Registrar vector de estado (con los RNDs capturados durante el evento)
             self.exporter.write_row(
                 event.nombre, self.state, self.tracker, self.config, self.fel,
-                self.row_context,
+                self.row_context, dia,
             )
 
-        # Registrar hora fin de jornada
+        # ── Registrar fin de jornada ───────────────────────────────────────
         self.state.fin_jornada = self.state.clock
         self.tracker.fin_jornada = self.state.clock
 
+        # Persistir promedios antes de que el state sea reiniciado para el
+        # próximo día (o descartado al finalizar la simulación).
+        self.tracker.cache_final_stats(self.state)
+
+        rows = list(self.exporter.current_day_rows)
+        iteraciones = len(rows)
+        return self.tracker, rows, iteraciones
+
+    def run(self) -> list[DayResult]:
+        """
+        Ejecuta la simulación completa (múltiples días) respetando las condiciones
+        de corte configuradas.
+
+        La simulación avanza día a día y se detiene cuando se cumple CUALQUIERA
+        de las siguientes condiciones:
+          - Se completaron `max_dias` días.
+          - El total acumulado de iteraciones supera `max_iteraciones` (siempre
+            se completa el día en curso antes de cortar).
+
+        Returns:
+            Lista de DayResult, uno por cada día simulado, con su tracker y
+            su vector de estado independiente.
+        """
+        results: list[DayResult] = []
+        total_iteraciones = 0
+        dia = 1
+
+        while True:
+            tracker, rows, iteraciones_dia = self._run_single_day(dia)
+            total_iteraciones += iteraciones_dia
+            results.append(DayResult(dia=dia, tracker=tracker, rows=rows))
+
+            # Evaluar condiciones de corte (se corta si se cumple CUALQUIERA)
+            limite_dias = dia >= self.config.max_dias
+            limite_iter = total_iteraciones >= self.config.max_iteraciones
+
+            if limite_dias or limite_iter:
+                break
+
+            dia += 1
+
         self.exporter.close()
-        return self.tracker
+        return results

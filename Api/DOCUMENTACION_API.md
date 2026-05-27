@@ -24,7 +24,13 @@ Verifica que el servidor esté levantado.
 
 ## 2. Ejecutar Simulación
 
-Ejecuta una nueva simulación con los parámetros indicados. **Importante:** Hacer esta petición borra de la memoria cualquier simulación que se haya ejecutado previamente.
+Ejecuta una nueva simulación multi-día con los parámetros indicados. **Importante:** Hacer esta petición borra de la memoria cualquier simulación que se haya ejecutado previamente.
+
+La simulación se detiene cuando se cumple **cualquiera** de las dos condiciones de corte:
+- Se completaron `max_dias` días.
+- El total acumulado de iteraciones (filas del vector de estado) supera `max_iteraciones`.
+
+En ambos casos, el día en curso siempre se completa antes de cortar.
 
 - **URL:** `/simulacion`
 - **Método:** `POST`
@@ -45,43 +51,46 @@ Ejecuta una nueva simulación con los parámetros indicados. **Importante:** Hac
     "luces_max": 10.0,
     "num_lineas": 2,
     "master_seed": 42,
-    "run_index": 1
+    "max_dias": 10,
+    "max_iteraciones": 1000
   }
   ```
 
 - **Respuesta Exitosa (200 OK):**
+  Devuelve las estadísticas del **Día 1** y los primeros registros paginados de ese día.
 
 ```json
 {
+  "dia": 1,
   "stats": {
-    "fin_jornada_min": 965.23,
-    "fin_jornada_hhmm": "16:05",
-    "promedio_espera_autos_min": 12.3456,
-    "promedio_espera_camionetas_min": 8.7654,
-    "autos_atendidos": 35,
-    "camionetas_atendidas": 18,
+    "dia": 1,
+    "fin_jornada_min": 960.0,
+    "fin_jornada_hhmm": "16:00",
+    "promedio_espera_autos_min": 0.0407,
+    "promedio_espera_camionetas_min": 0.2317,
+    "autos_atendidos": 21,
+    "camionetas_atendidas": 15,
     "porcentaje_bloqueo_frenos": {
-      "1": 15.23,
-      "2": 10.45
+      "1": 3.2059,
+      "2": 0.0884
     }
   },
   "pagination": {
     "offset": 0,
     "limit": 50,
-    "total_records": 1205
+    "total_records": 120
   },
   "records": [
     {
+      "Dia": "1",
       "Evento": "Inicialización",
       "Reloj_min": "480.00",
-      "RND_Llegada_Auto": "0.1234",
-      "Tiempo_Entre_Llegadas_Auto": "12.50",
-      "Prox_Llegada_Auto": "492.50",
-      "Cola_Camionetas": "0",
+      "RND_Llegada_Auto": "0.4068",
+      "Tiempo_Entre_Llegadas_Auto": "13.4908",
+      "Prox_Llegada_Auto": "493.49",
+      "Cola_Autos": "0",
       "Estado_Frenos_L1": "Libre",
       "Cant_Autos_Atendidos": "0",
-      "Tiempo_Espera_Auto": "",
-      "Tiempo_Bloqueo_L1": "",
       "Clientes_Activos": ""
     }
   ]
@@ -90,13 +99,14 @@ Ejecuta una nueva simulación con los parámetros indicados. **Importante:** Hac
 
 ---
 
-## 3. Consultar Simulación Activa
+## 3. Consultar Registros de un Día
 
-Devuelve una porción paginada de los registros de la **última simulación ejecutada** (la que está guardada en memoria). Las estadísticas de resumen se incluyen siempre en la respuesta, sin importar qué porción (`offset`/`limit`) se pida.
+Devuelve una porción paginada de los registros del vector de estado del **día indicado**. Las estadísticas de ese día siempre se incluyen en la respuesta.
 
 - **URL:** `/simulacion`
 - **Método:** `GET`
 - **Query Params:**
+  - `dia` (integer): Número de jornada a consultar (default: `1`).
   - `offset` (integer): A partir de qué registro devolver (default: `0`).
   - `limit` (integer): Cuántos registros devolver (default: `50`).
 
@@ -104,7 +114,66 @@ Devuelve una porción paginada de los registros de la **última simulación ejec
   Mismo formato JSON que el endpoint `POST` mostrado arriba.
 
 - **Respuesta de Error (404 Not Found):**
-  Si intentás hacer un `GET` antes de haber hecho un `POST` inicial (es decir, la memoria está vacía).
+  Si no hay ninguna simulación ejecutada, o si el día solicitado no existe.
+  ```json
+  {
+    "detail": "No hay ninguna simulación ejecutada. Realizá primero un POST /simulacion."
+  }
+  ```
+  ```json
+  {
+    "detail": "El día 5 no existe en la simulación activa. Días disponibles: [1, 2, 3]."
+  }
+  ```
+
+---
+
+## 4. Estadísticas de Todos los Días
+
+Devuelve un array con las estadísticas de cada jornada simulada. Diseñado para alimentar gráficos comparativos entre días.
+
+- **URL:** `/estadisticas`
+- **Método:** `GET`
+- **No requiere parámetros.**
+
+- **Respuesta Exitosa (200 OK):**
+
+```json
+{
+  "total_dias": 3,
+  "estadisticas": [
+    {
+      "dia": 1,
+      "fin_jornada_min": 960.0,
+      "fin_jornada_hhmm": "16:00",
+      "promedio_espera_autos_min": 0.0407,
+      "promedio_espera_camionetas_min": 0.2317,
+      "autos_atendidos": 21,
+      "camionetas_atendidas": 15,
+      "porcentaje_bloqueo_frenos": {
+        "1": 3.2059,
+        "2": 0.0884
+      }
+    },
+    {
+      "dia": 2,
+      "fin_jornada_min": 965.86,
+      "fin_jornada_hhmm": "16:05",
+      "promedio_espera_autos_min": 0.1040,
+      "promedio_espera_camionetas_min": 0.7739,
+      "autos_atendidos": 31,
+      "camionetas_atendidas": 17,
+      "porcentaje_bloqueo_frenos": {
+        "1": 2.4578,
+        "2": 1.5686
+      }
+    }
+  ]
+}
+```
+
+- **Respuesta de Error (404 Not Found):**
+  Si intentás hacer un `GET` antes de haber hecho un `POST` inicial.
   ```json
   {
     "detail": "No hay ninguna simulación ejecutada. Realizá primero un POST /simulacion."

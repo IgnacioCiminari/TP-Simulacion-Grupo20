@@ -22,13 +22,14 @@ Se modela la operación diaria de una planta de Revisión Técnica Vehicular (RT
 tp4_simulacion/
 │
 ├── main.py                    # Punto de entrada. Configurar parámetros aquí.
+├── api.py                     # API REST (FastAPI). Levantar con uvicorn.
 ├── pyproject.toml             # Configuración del proyecto (uv)
 │
 ├── core/                      # Motor de simulación (DES)
 │   ├── event.py               # Clase abstracta Event
 │   ├── fel.py                 # Future Event List (heap de prioridad)
 │   ├── rng.py                 # Generador de números pseudoaleatorios con traza de RND
-│   ├── simulation.py          # Clase Simulation: bucle principal, RNG, config
+│   ├── simulation.py          # Clase Simulation: bucle principal multi-día, RNG, config
 │   └── state.py               # Vector de estado global (SimulationState)
 │
 ├── entities/                  # Entidades del dominio
@@ -47,14 +48,14 @@ tp4_simulacion/
 │
 ├── stats/                     # Estadísticas y exportación
 │   ├── tracker.py             # StatsTracker: promedios, porcentajes, hora de cierre
-│   └── exporter.py            # CsvExporter: genera el vector de estado en CSV
+│   └── exporter.py            # CsvExporter: genera el vector de estado en CSV (multi-día)
 │
 ├── tests/                     # Suite de tests (pytest)
 │   ├── test_queue.py          # Tests unitarios de la cola con prioridad
 │   └── test_events.py         # Tests de bloqueo, desbloqueo y simulación completa
 │
 └── output/                    # Generado automáticamente al correr la simulación
-    └── vector_de_estado.csv   # Traza completa del vector de estado
+    └── vector_de_estado.csv   # Traza completa del vector de estado (todos los días)
 ```
 
 ---
@@ -82,30 +83,31 @@ uv sync
 Para interactuar con la simulación vía API REST y consultar los resultados paginados en formato JSON:
 
 ```powershell
-uv run uvicorn api:app --reload
+uv run python -m uvicorn api:app --reload
 ```
 
 La API estará disponible en `http://127.0.0.1:8000`. Podés ver la documentación interactiva (Swagger) en `http://127.0.0.1:8000/docs`.
 
 ### 4. Endpoints de la API
 
-- **`POST /simulacion`**: Ejecuta una nueva simulación (reemplaza la anterior) y devuelve las estadísticas de resumen y la primera página de registros.
+- **`POST /simulacion`**: Ejecuta una nueva simulación multi-día (reemplaza la anterior) y devuelve las estadísticas y registros del **Día 1**.
   - Query Params: `offset` (default: 0), `limit` (default: 50).
-  - Body (opcional): JSON con los parámetros de la simulación.
-- **`GET /simulacion`**: Consulta los registros paginados de la simulación activa (la última ejecutada con POST).
-  - Query Params: `offset` (default: 0), `limit` (default: 50).
+  - Body (opcional): JSON con los parámetros de la simulación (ver tabla más abajo).
+- **`GET /simulacion`**: Consulta los registros paginados de un día específico de la simulación activa.
+  - Query Params: `dia` (default: 1), `offset` (default: 0), `limit` (default: 50).
+- **`GET /estadisticas`**: Devuelve el array de estadísticas independientes de cada jornada simulada (hora de finalización, promedios de espera, porcentajes de bloqueo). Ideal para alimentar gráficos.
 
-> **Nota:** La simulación también sigue guardando el archivo físico `.csv` completo en `output/vector_de_estado.csv` tras cada ejecución.
+> **Nota:** La simulación también genera el archivo físico `.csv` completo en `output/vector_de_estado.csv` tras cada ejecución, con todos los días trazados en una única tabla (columna `Dia` identifica cada jornada).
 
 ### 5. Correr por Consola (Script Original)
 
 Si querés correr una simulación aislada desde la consola sin levantar el servidor API:
 
 ```powershell
-uv run main.py
+uv run python main.py
 ```
 
-Esto genera el archivo `output/vector_de_estado.csv` y muestra el reporte en la terminal.
+Esto genera el archivo `output/vector_de_estado.csv` y muestra el reporte de cada día en la terminal.
 
 ### 6. Correr los tests
 
@@ -117,36 +119,39 @@ uv run pytest tests/ -v
 
 ## Parámetros Configurables
 
-Todos los parámetros están en `main.py` dentro del objeto `SimulationConfig`:
+Todos los parámetros se pueden configurar en `main.py` (objeto `SimulationConfig`) o en el body del `POST /simulacion`:
 
-| Parámetro               | Descripción                                              | Default     |
-|-------------------------|----------------------------------------------------------|-------------|
-| `hora_apertura`         | Apertura de la planta (minutos desde medianoche)         | `480` (8hs) |
-| `hora_cierre_puertas`   | Cierre de ingreso (minutos desde medianoche)             | `960` (16hs)|
-| `media_llegada_auto`    | Media del tiempo entre llegadas de autos (min, Exp)     | `15`        |
-| `media_llegada_camioneta` | Media del tiempo entre llegadas de camionetas (min, Exp) | `30`      |
-| `frenos_min / frenos_max` | Rango de la revisión de Frenos (min, Uniforme)         | `4 – 7`     |
-| `luces_min / luces_max` | Rango de la revisión de Luces y Emisiones (min, Uniforme)| `6 – 10`   |
-| `num_lineas`            | Cantidad de líneas de inspección                         | `2`         |
-| `csv_output_path`       | Ruta de salida del CSV                                   | `output/vector_de_estado.csv` |
-| `master_seed`           | Semilla maestra para reproducibilidad (`None` = aleatorio) | `42`      |
-| `run_index`             | Índice del día simulado (para seeds derivadas por día)   | `1`         |
+| Parámetro               | Descripción                                                                 | Default     |
+|-------------------------|-----------------------------------------------------------------------------|-------------|
+| `hora_apertura`         | Apertura de la planta (minutos desde medianoche)                            | `480` (8hs) |
+| `hora_cierre_puertas`   | Cierre de ingreso (minutos desde medianoche)                                | `960` (16hs)|
+| `media_llegada_auto`    | Media del tiempo entre llegadas de autos (min, Exp)                         | `15`        |
+| `media_llegada_camioneta` | Media del tiempo entre llegadas de camionetas (min, Exp)                  | `30`        |
+| `frenos_min / frenos_max` | Rango de la revisión de Frenos (min, Uniforme)                            | `4 – 7`     |
+| `luces_min / luces_max` | Rango de la revisión de Luces y Emisiones (min, Uniforme)                   | `6 – 10`    |
+| `num_lineas`            | Cantidad de líneas de inspección                                             | `2`         |
+| `csv_output_path`       | Ruta de salida del CSV                                                      | `output/vector_de_estado.csv` |
+| `master_seed`           | Semilla maestra para reproducibilidad (`None` = aleatorio)                  | `42`        |
+| `max_dias`              | Cantidad máxima de días a simular                                           | `10`        |
+| `max_iteraciones`       | Umbral de iteraciones totales acumuladas (se corta al superarlo)            | `1000`      |
+
+> **Condición de corte:** La simulación avanza día a día y se detiene cuando se cumple **cualquiera** de las dos condiciones (`max_dias` o `max_iteraciones`). El día en curso siempre se completa antes de cortar.
 
 ---
 
 ## Reproducibilidad y Seeds
 
-La simulación es completamente determinística dado un par `(master_seed, run_index)`.  
+La simulación es completamente determinística dado `master_seed`.  
 
-Para simular múltiples días de forma reproducible, la seed de cada día se deriva automáticamente:
+Para simular múltiples días de forma reproducible, la seed de cada día se deriva automáticamente a partir del número de día:
 
 ```python
 # Pseudocódigo de la derivación
-seed_dia = (master_seed * constante + run_index) mod 2^64
+seed_dia = (master_seed * constante + dia) mod 2^64
 ```
 
 Esto garantiza que:
-- El mismo `run_index` con la misma `master_seed` siempre produce la misma jornada.
+- El mismo número de día con la misma `master_seed` siempre produce la misma jornada.
 - Días distintos producen secuencias de números aleatorios independientes.
 - Cambiar la `master_seed` cambia toda la serie de días de forma reproducible.
 
@@ -157,28 +162,33 @@ Esto garantiza que:
 ### Terminal
 
 ```
-Iniciando simulación (seed maestra=42, día=1)...
-============================================================
-  RESULTADOS DE LA SIMULACIÓN - RTV
-============================================================
-  Hora de fin de jornada:           16:47 (1007.58 min)
-  Tiempo promedio espera autos:      0.0388 min
-  Tiempo promedio espera camionetas: 0.2172 min
-  Autos atendidos:                  22
-  Camionetas atendidas:              16
-  Bloqueo Frenos Línea 1:            2.92%
-  Bloqueo Frenos Línea 2:            0.08%
-============================================================
+Iniciando simulación (seed maestra=42, max_dias=10, max_iteraciones=1000)...
 
+============================================================
+  DÍA 1
+  Hora de fin de jornada:           16:00 (960.00 min)
+  Tiempo promedio espera autos:      0.0407 min
+  Tiempo promedio espera camionetas: 0.2317 min
+  Autos atendidos:                  21
+  Camionetas atendidas:              15
+  Bloqueo Frenos Línea 1:            3.21%
+  Bloqueo Frenos Línea 2:            0.09%
+
+============================================================
+  DÍA 2
+  ...
+
+Total de días simulados: 8
 Vector de estado guardado en: output/vector_de_estado.csv
 ```
 
 ### CSV (`output/vector_de_estado.csv`)
 
-El CSV tiene **columnas fijas** con el estado completo del sistema en cada transición, incluyendo las columnas de variables aleatorias (`RND_*` y `Tiempo_*`) asociadas al evento en la misma fila (se muestran vacías en los eventos donde no se muestrearon):
+El CSV contiene todos los días en una única tabla. La primera columna `Dia` identifica la jornada de cada fila. Cada fila corresponde a una transición de estado (procesamiento de un evento):
 
 | Columna | Descripción |
 | :--- | :--- |
+| `Dia` | Número de la jornada simulada (1, 2, 3, ...) |
 | `Evento` | Nombre del evento procesado |
 | `Reloj_min` | Instante del reloj de simulación (minutos) |
 | **Llegada Auto** | |
@@ -221,7 +231,9 @@ El CSV tiene **columnas fijas** con el estado completo del sistema en cada trans
 
 La simulación implementa el patrón **Discrete Event Simulation (DES)** orientado a objetos:
 
-1. **`Simulation`** mantiene el reloj, la FEL y el RNG. Ejecuta el bucle: extraer evento → avanzar reloj → procesar → agendar nuevos eventos.
+1. **`Simulation`** mantiene el reloj, la FEL y el RNG. Ejecuta el bucle exterior (días) y el bucle interior (eventos del día): extraer evento → avanzar reloj → procesar → agendar nuevos eventos.
 2. **`Event` (abstracta)** define la interfaz: `timestamp` + `process(sim) → list[Event]`. Cada evento encapsula su propia lógica de transición de estado.
-3. **`SimulationState`** es el vector de estado mutable. Los eventos lo consultan y modifican a través de `sim.state`.
+3. **`SimulationState`** es el vector de estado mutable. Los eventos lo consultan y modifican a través de `sim.state`. Se reinicia al comienzo de cada nuevo día.
 4. **`EventQueue` (FEL)** es un heap de mínimos. Los eventos se despachan siempre en orden cronológico.
+5. **`StatsTracker`** acumula métricas de un único día. Al cierre de cada jornada llama a `cache_final_stats()` para persistir los promedios antes de que el estado se reinicie.
+6. **`CsvExporter`** escribe todas las jornadas en un único CSV usando la columna `Dia`. En memoria, indexa los registros por día (`rows_by_day`) para que la API pueda acceder a cada jornada en O(1).
