@@ -206,11 +206,14 @@ El CSV tiene **columnas fijas** con el estado completo del sistema en cada trans
 | **Estadísticas Acumuladas** | |
 | `Cant_Autos_Atendidos` | Cantidad total de autos que finalizaron la revisión técnica |
 | `Cant_Camionetas_Atendidas` | Cantidad total de camionetas que finalizaron la revisión técnica |
+| `Tiempo_Espera_Auto` | Tiempo de espera en cola del auto atendido en el evento actual (si aplica) |
 | `Acum_Espera_Autos` | Suma acumulada de los tiempos de espera en cola de autos (minutos) |
+| `Tiempo_Espera_Camioneta` | Tiempo de espera en cola de la camioneta atendida en el evento actual (si aplica) |
 | `Acum_Espera_Camionetas` | Suma acumulada de los tiempos de espera en cola de camionetas (minutos) |
+| `Tiempo_Bloqueo_L{i}` | Tiempo de bloqueo de la estación de Frenos de la línea $i$ liberado en el evento actual |
 | `Acum_Bloqueo_Frenos_L{i}` | Tiempo acumulado en que la estación de Frenos de la línea $i$ estuvo bloqueada |
 | **Estado del Sistema** | |
-| `Clientes_Activos` | Snapshot serializado de vehículos activos: `[ID:X, Tipo, Estado, L:N]; ...` (Opción A) |
+| `Clientes_Activos` | Snapshot serializado de vehículos activos: `[Id:X, Tipo:Y, Estado:Z, Linea:N, Hora_Llegada:T, Hora_Inicio_Bloqueo:T|None]; ...` |
 
 ---
 

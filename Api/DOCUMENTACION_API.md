@@ -77,11 +77,12 @@ Ejecuta una nueva simulación con los parámetros indicados. **Importante:** Hac
       "RND_Llegada_Auto": "0.1234",
       "Tiempo_Entre_Llegadas_Auto": "12.50",
       "Prox_Llegada_Auto": "492.50",
-      "Cola_Autos": "0",
       "Cola_Camionetas": "0",
       "Estado_Frenos_L1": "Libre",
       "Cant_Autos_Atendidos": "0",
-      "Clientes_Activos": "[]"
+      "Tiempo_Espera_Auto": "",
+      "Tiempo_Bloqueo_L1": "",
+      "Clientes_Activos": ""
     }
   ]
 }
