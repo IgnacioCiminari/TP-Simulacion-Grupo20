@@ -29,11 +29,7 @@ def main() -> None:
         # ── Infraestructura ───────────────────────────────────────────────────
         num_lineas=2,
 
-        # ── Salida ────────────────────────────────────────────────────────────
-        csv_output_path="output/vector_de_estado.csv",
-
-        # ── Reproducibilidad ──────────────────────────────────────────────────
-        # master_seed=None para comportamiento no determinístico.
+        # ── Reproducibilidad (fija internamente; no expuesta al usuario) ──────
         master_seed=42,
 
         # ── Condiciones de corte (se detiene al cumplirse CUALQUIERA) ─────────
@@ -47,7 +43,7 @@ def main() -> None:
     )
 
     sim = Simulation(config)
-    results = sim.run()
+    results, global_stats = sim.run()
 
     for day_result in results:
         print(f"\n{'=' * 60}")
@@ -55,7 +51,13 @@ def main() -> None:
         print(day_result.tracker.report_cached())
 
     print(f"\nTotal de días simulados: {len(results)}")
-    print(f"Vector de estado guardado en: {config.csv_output_path}")
+    print(f"Tiempo de ejecución: {sim.elapsed_seconds:.2f} s")
+    print(f"\nESTADÍSTICAS GLOBALES:")
+    print(f"  Total autos atendidos:       {global_stats.total_autos_atendidos}")
+    print(f"  Total camionetas atendidas:  {global_stats.total_camionetas_atendidas}")
+    print(f"  Promedio espera autos:       {global_stats.promedio_espera_autos:.4f} min")
+    print(f"  Promedio espera camionetas:  {global_stats.promedio_espera_camionetas:.4f} min")
+    print(f"  Promedio fin de jornada:     {global_stats.promedio_fin_jornada_hhmm()}")
 
 
 if __name__ == "__main__":

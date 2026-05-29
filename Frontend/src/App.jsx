@@ -3,6 +3,7 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { SimulationProvider } from "./context/SimulationContext";
 import Layout from "./components/Layout";
 import Config from "./pages/Config";
+import Statistics from "./pages/Statistics";
 import Table from "./pages/Table";
 import Graph from "./pages/Graph";
 
@@ -15,6 +16,7 @@ function App() {
             <Routes>
               <Route path="/" element={<Navigate replace to="/config" />} />
               <Route path="/config" element={<Config />} />
+              <Route path="/stats" element={<Statistics />} />
               <Route path="/table" element={<Table />} />
               <Route path="/graph" element={<Graph />} />
             </Routes>

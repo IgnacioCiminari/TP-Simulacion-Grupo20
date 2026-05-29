@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -9,8 +10,8 @@ from core.rng import TrackedRandom
 from core.state import SimulationState
 from entities.line import InspectionLine
 from entities.station import Station, StationType
-from stats.exporter import CsvExporter
-from stats.tracker import StatsTracker
+from stats.exporter import MemoryExporter
+from stats.tracker import StatsTracker, GlobalStatsAccumulator
 
 if TYPE_CHECKING:
     pass
@@ -40,19 +41,11 @@ class SimulationConfig:
     # Infraestructura
     num_lineas: int = 2
 
-    # Salida
-    csv_output_path: str = "output/vector_de_estado.csv"
+    # Semilla de reproducibilidad (fija internamente, no expuesta al usuario)
+    master_seed: int = 42
 
-    # Semilla de reproducibilidad
-    # Usar None para generación aleatoria real
-    master_seed: int | None = 42
-
-    # ── Condiciones de corte ────────────────────────────────────────────────
+    # ── Condiciones de corte ────────────────────────────────────────────
     # La simulación se detiene cuando se cumple CUALQUIERA de las dos condiciones.
-    # max_dias:       detiene después de completar exactamente ese número de días.
-    # max_iteraciones: detiene después de que el total de iteraciones (filas del
-    #                  vector de estado) supere este umbral; siempre se completa
-    #                  el día en curso antes de cortar.
     max_dias: int = 10
     max_iteraciones: int = 1_000
 
@@ -65,27 +58,25 @@ class DayResult(NamedTuple):
 
 
 # Claves del row_context para cada variable aleatoria muestreada
-# Formato: {"rnd_<var>": float | None, "tiempo_<var>": float | None}
-# También incluye claves para tiempos de espera y bloqueo del evento actual.
 _CONTEXT_KEYS = [
     "rnd_llegada_auto",
     "tiempo_llegada_auto",
     "rnd_llegada_camioneta",
     "tiempo_llegada_camioneta",
-    "rnd_frenos_l1",
-    "tiempo_frenos_l1",
-    "rnd_luces_l1",
-    "tiempo_luces_l1",
-    "rnd_frenos_l2",
-    "tiempo_frenos_l2",
-    "rnd_luces_l2",
-    "tiempo_luces_l2",
     # Tiempo de espera del vehículo servido en este evento (por tipo)
     "tiempo_espera_auto",
     "tiempo_espera_camioneta",
-    # Tiempo de bloqueo liberado en este evento (por línea)
-    "tiempo_bloqueo_l1",
-    "tiempo_bloqueo_l2",
+    # Las claves por línea (rnd_frenos_lN, tiempo_bloqueo_lN, etc.)
+    # se generan dinámicamente en reset_row_context() según config.num_lineas.
+]
+
+
+_CONTEXT_KEYS_PER_LINE = [
+    "rnd_frenos_l{i}",
+    "tiempo_frenos_l{i}",
+    "rnd_luces_l{i}",
+    "tiempo_luces_l{i}",
+    "tiempo_bloqueo_l{i}",
 ]
 
 
@@ -96,52 +87,55 @@ class Simulation:
     Gestiona el reloj de simulación, la FEL y el bucle principal de despacho
     de eventos. Proporciona el generador de números aleatorios (RNG) a los
     eventos a través de métodos auxiliares que registran automáticamente el
-    RND base y el valor generado en `row_context` para su exportación al CSV.
+    RND base y el valor generado en `row_context` para su exportación.
 
     La simulación se detiene cuando se cumple CUALQUIERA de las dos condiciones
     de corte: `max_dias` o `max_iteraciones`. Si se alcanza el límite de
     iteraciones en mitad de un día, ese día se completa antes de cortar.
+
+    Todo el vector de estado se mantiene en memoria RAM (sin escritura a disco).
+    El tiempo de ejecución real se mide con `time.perf_counter`.
     """
 
     def __init__(self, config: SimulationConfig) -> None:
         self.config = config
-        self.exporter = CsvExporter(config.csv_output_path)
+        self.exporter = MemoryExporter()
 
         # Contexto de la fila actual: RNDs y tiempos generados durante el evento.
-        # Se comparte entre días; se reinicia antes de cada evento.
         self.row_context: dict[str, float | None] = {}
+
+        # Tiempo real de ejecución (segundos, llenado en run())
+        self.elapsed_seconds: float = 0.0
 
     # ------------------------------------------------------------------
     # Derivación determinística de semillas
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _derive_seed(master_seed: int | None, dia: int) -> int | None:
+    def _derive_seed(master_seed: int, dia: int) -> int:
         """
         Deriva una seed determinística para un día dado a partir de la
         semilla maestra. Para múltiples días, cada día tendrá una seed única
         pero reproducible dado el mismo master_seed.
-
-        Si master_seed es None, se devuelve None (comportamiento aleatorio real).
         """
-        if master_seed is None:
-            return None
         combined = (master_seed * 6364136223846793005 + dia) & 0xFFFFFFFFFFFFFFFF
         return combined
 
     # ------------------------------------------------------------------
-    # Gestión del contexto de fila (para el CSV)
+    # Gestión del contexto de fila (para la memoria)
     # ------------------------------------------------------------------
 
     def reset_row_context(self) -> None:
-        """Limpia el contexto de la fila actual. Llamar antes de procesar cada evento."""
-        self.row_context = {key: None for key in _CONTEXT_KEYS}
+        """Limpia el contexto de la fila actual. Llamar antes de procesar cada evento.
+        Genera las claves dinámicamente según el número de líneas configurado."""
+        ctx = {key: None for key in _CONTEXT_KEYS}
+        for i in range(1, self.config.num_lineas + 1):
+            for key_template in _CONTEXT_KEYS_PER_LINE:
+                ctx[key_template.replace("{i}", str(i))] = None
+        self.row_context = ctx
 
     # ------------------------------------------------------------------
     # Generadores de variables aleatorias
-    # Los métodos registran automáticamente (rnd, tiempo) en row_context.
-    # Devuelven únicamente el valor muestreado para no cambiar las firmas
-    # de los eventos.
     # ------------------------------------------------------------------
 
     def sample_llegada_auto(self) -> float:
@@ -186,9 +180,18 @@ class Simulation:
         """Agenda un evento en la FEL."""
         self.fel.push(event)
 
-    def _run_single_day(self, dia: int) -> tuple[StatsTracker, list[dict], int]:
+    def _run_single_day(
+        self, dia: int,
+        offset_autos: int = 0,
+        offset_camionetas: int = 0,
+    ) -> tuple[StatsTracker, list[dict], int]:
         """
         Inicializa y ejecuta un único día de simulación.
+
+        Args:
+            dia: Número de jornada (1-indexed).
+            offset_autos: Total global de autos atendidos en días anteriores.
+            offset_camionetas: Total global de camionetas atendidas en días anteriores.
 
         Returns:
             (tracker, rows, iteraciones) donde `iteraciones` es la cantidad de
@@ -230,10 +233,8 @@ class Simulation:
 
         self.schedule(CierrePuertas(timestamp=self.config.hora_cierre_puertas))
 
-        # ── Escribir encabezado (sólo en el primer día) e inicialización ──
-        if dia == 1:
-            self.exporter.write_header(self.state, self.config)
-        self.exporter.start_day(dia)
+        # ── Preparar exporter para este día ───────────────────────────────
+        self.exporter.start_day(dia, offset_autos=offset_autos, offset_camionetas=offset_camionetas)
 
         self.exporter.write_row(
             "Inicialización", self.state, self.tracker, self.config, self.fel,
@@ -257,37 +258,50 @@ class Simulation:
         self.state.fin_jornada = self.state.clock
         self.tracker.fin_jornada = self.state.clock
 
-        # Persistir promedios antes de que el state sea reiniciado para el
-        # próximo día (o descartado al finalizar la simulación).
+        # Persistir valores que dependen del state antes de descartarlo
         self.tracker.cache_final_stats(self.state)
 
         rows = list(self.exporter.current_day_rows)
         iteraciones = len(rows)
         return self.tracker, rows, iteraciones
 
-    def run(self) -> list[DayResult]:
+    def run(self) -> tuple[list[DayResult], GlobalStatsAccumulator]:
         """
         Ejecuta la simulación completa (múltiples días) respetando las condiciones
         de corte configuradas.
 
-        La simulación avanza día a día y se detiene cuando se cumple CUALQUIERA
-        de las siguientes condiciones:
-          - Se completaron `max_dias` días.
-          - El total acumulado de iteraciones supera `max_iteraciones` (siempre
-            se completa el día en curso antes de cortar).
-
         Returns:
-            Lista de DayResult, uno por cada día simulado, con su tracker y
-            su vector de estado independiente.
+            Tupla (results, global_stats):
+              - results: Lista de DayResult, uno por día simulado.
+              - global_stats: Acumulador con estadísticas de toda la simulación.
         """
+        # Inicializar el exporter en memoria (sin apertura de archivos)
+        self.exporter.init_header(self.config)
+
         results: list[DayResult] = []
+        global_stats = GlobalStatsAccumulator()
         total_iteraciones = 0
         dia = 1
 
+        # Offsets globales que se pasan a cada día para calcular Acum_Global_*
+        offset_autos = 0
+        offset_camionetas = 0
+
+        t_start = time.perf_counter()
+
         while True:
-            tracker, rows, iteraciones_dia = self._run_single_day(dia)
+            tracker, rows, iteraciones_dia = self._run_single_day(
+                dia,
+                offset_autos=offset_autos,
+                offset_camionetas=offset_camionetas,
+            )
             total_iteraciones += iteraciones_dia
             results.append(DayResult(dia=dia, tracker=tracker, rows=rows))
+            global_stats.add_day(tracker)
+
+            # Actualizar offsets para el siguiente día
+            offset_autos += tracker.autos_atendidos
+            offset_camionetas += tracker.camionetas_atendidas
 
             # Evaluar condiciones de corte (se corta si se cumple CUALQUIERA)
             limite_dias = dia >= self.config.max_dias
@@ -298,5 +312,5 @@ class Simulation:
 
             dia += 1
 
-        self.exporter.close()
-        return results
+        self.elapsed_seconds = time.perf_counter() - t_start
+        return results, global_stats

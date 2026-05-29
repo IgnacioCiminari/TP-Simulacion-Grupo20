@@ -43,6 +43,11 @@ class FinRevisionLuces(Event):
         luces = line.luces
 
         # El vehículo sale del sistema
+        # Registrar tiempo real de servicio en Luces antes de finish_service
+        if luces._busy_start is not None:
+            tiempo_servicio_luces = state.clock - luces._busy_start
+            sim.tracker.register_servicio_luces(self.line_id, tiempo_servicio_luces)
+
         exiting_vehicle = luces.finish_service(state.clock)
         exiting_vehicle.estado = VehicleState.RETIRADO
 

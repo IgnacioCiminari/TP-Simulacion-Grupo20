@@ -42,6 +42,12 @@ class FinRevisionFrenos(Event):
         luces = line.luces
 
         # El vehículo termina Frenos
+        # Registrar el tiempo real de servicio en frenos antes de finish_service
+        if vehicle := frenos.current_vehicle:
+            if vehicle.hora_inicio_servicio is not None:
+                tiempo_servicio_frenos = state.clock - vehicle.hora_inicio_servicio
+                sim.tracker.register_servicio_frenos(self.line_id, tiempo_servicio_frenos)
+
         vehicle = frenos.finish_service(state.clock)
 
         if luces.is_free():

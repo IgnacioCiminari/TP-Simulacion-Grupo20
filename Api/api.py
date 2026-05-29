@@ -1,12 +1,14 @@
 """
 API HTTP de la Simulación de la Planta de Revisión Técnica Vehicular.
 
-Expone tres endpoints:
+Endpoints:
   POST /simulacion              — Ejecuta una nueva simulación (descarta la anterior).
-                                  Devuelve los registros del primer día.
+                                  Devuelve estadísticas globales + día 1 paginado.
   GET  /simulacion              — Recupera registros paginados de un día específico.
-  GET  /estadisticas            — Devuelve las estadísticas de cada día simulado
-                                  (para armar gráficos).
+  GET  /simulacion/ultimo_registro — Devuelve el último registro generado en toda la simulación.
+  GET  /simulacion/exportar     — Descarga el vector de estado completo como CSV.
+  GET  /estadisticas            — Devuelve las estadísticas de cada día simulado.
+  GET  /estadisticas_globales   — Devuelve las estadísticas globales de la simulación activa.
 
 Paginación en GET /simulacion (query params): offset (default 0), limit (default 50).
 El parámetro `dia` selecciona la jornada a consultar (default 1).
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.simulation import Simulation, SimulationConfig
@@ -26,7 +29,7 @@ from core.simulation import Simulation, SimulationConfig
 app = FastAPI(
     title="RTV Simulation API",
     description="API para ejecutar y consultar simulaciones de la Planta de Revisión Técnica Vehicular.",
-    version="2.0.0",
+    version="3.0.0",
 )
 
 app.add_middleware(
@@ -46,8 +49,7 @@ _simulacion_activa: dict | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schema de entrada (todos los campos son opcionales — si no se envía nada,
-# se usan los valores por defecto de SimulationConfig).
+# Schema de entrada (seed excluida — siempre fija internamente).
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SimulationConfigIn(BaseModel):
@@ -60,7 +62,6 @@ class SimulationConfigIn(BaseModel):
     luces_min: float = 6.0
     luces_max: float = 10.0
     num_lineas: int = 2
-    master_seed: int | None = 42
     max_dias: int = 10
     max_iteraciones: int = 1_000
 
@@ -69,23 +70,70 @@ class SimulationConfigIn(BaseModel):
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _format_elapsed(seconds: float) -> str:
+    """
+    Formatea el tiempo de ejecución en un string legible.
+    Si supera 60 segundos, devuelve 'M:SS,cc'; si no, 'SS,cc s'.
+    """
+    if seconds >= 60:
+        total_cs = round(seconds * 100)
+        mins = total_cs // 6000
+        secs = (total_cs % 6000) // 100
+        cs = total_cs % 100
+        return f"{mins}:{secs:02d},{cs:02d}"
+    else:
+        return f"{seconds:.2f} s"
+
+
 def _build_stats_for_day(day_result) -> dict:
     """Construye el dict de estadísticas a partir de un DayResult."""
     tracker = day_result.tracker
-    # El state ya no está disponible post-ejecución del día, pero el tracker
-    # guarda los valores necesarios directamente.
+    line_ids = sorted(
+        set(tracker.acum_bloqueo_frenos.keys())
+        | set(tracker.acum_servicio_frenos.keys())
+        | set(tracker.acum_servicio_luces.keys())
+    )
     return {
         "dia": day_result.dia,
         "fin_jornada_min": tracker.fin_jornada,
         "fin_jornada_hhmm": tracker.hora_fin_jornada_hhmm(),
-        "promedio_espera_autos_min": tracker.promedio_espera_autos_cached,
-        "promedio_espera_camionetas_min": tracker.promedio_espera_camionetas_cached,
         "autos_atendidos": tracker.autos_atendidos,
         "camionetas_atendidas": tracker.camionetas_atendidas,
+        "max_cola": tracker.max_cola,
+        "promedio_espera_autos_min": round(tracker.promedio_espera_autos(), 4),
+        "promedio_espera_camionetas_min": round(tracker.promedio_espera_camionetas(), 4),
         "porcentaje_bloqueo_frenos": {
             str(line_id): round(tracker.porcentaje_bloqueo_frenos(line_id), 4)
-            for line_id in sorted(tracker.acum_bloqueo_frenos.keys())
+            for line_id in line_ids
         },
+        "servicio_frenos_min": {
+            str(line_id): round(tracker.acum_servicio_frenos.get(line_id, 0.0), 4)
+            for line_id in line_ids
+        },
+        "servicio_luces_min": {
+            str(line_id): round(tracker.acum_servicio_luces.get(line_id, 0.0), 4)
+            for line_id in line_ids
+        },
+        "total_servicio_min": {
+            str(line_id): round(tracker.total_servicio_linea(line_id), 4)
+            for line_id in line_ids
+        },
+    }
+
+
+def _build_global_stats(sim: dict) -> dict:
+    """Construye el dict de estadísticas globales desde el store en memoria."""
+    gs = sim["global_stats_obj"]
+    return {
+        "total_dias": sim["total_dias"],
+        "total_autos_atendidos": gs.total_autos_atendidos,
+        "total_camionetas_atendidas": gs.total_camionetas_atendidas,
+        "promedio_espera_autos_min": round(gs.promedio_espera_autos, 4),
+        "promedio_espera_camionetas_min": round(gs.promedio_espera_camionetas, 4),
+        "promedio_fin_jornada_min": round(gs.promedio_fin_jornada, 2) if gs.promedio_fin_jornada else None,
+        "promedio_fin_jornada_hhmm": gs.promedio_fin_jornada_hhmm(),
+        "porcentaje_bloqueo_global": gs.porcentaje_bloqueo_global_dict(),
+        "tiempo_ejecucion": sim["tiempo_ejecucion"],
     }
 
 
@@ -151,7 +199,8 @@ def read_root():
         "`max_dias` días completados o `max_iteraciones` iteraciones acumuladas "
         "(el día en curso siempre se completa antes de cortar). "
         "La simulación anterior (si existía) es reemplazada inmediatamente. "
-        "Devuelve los registros paginados del Día 1."
+        "Devuelve las estadísticas globales de la simulación completa, más los "
+        "registros paginados del Día 1, y el último registro de toda la simulación."
     ),
 )
 def run_simulacion(
@@ -161,17 +210,14 @@ def run_simulacion(
 ) -> dict:
     global _simulacion_activa
 
-    # Construir la configuración de simulación
+    # Construir la configuración de simulación (seed siempre fija internamente)
     params = config_in.model_dump() if config_in else {}
     config = SimulationConfig(**params)
 
     # Correr la simulación multi-día
     sim = Simulation(config)
-    results = sim.run()
+    results, global_stats = sim.run()
 
-    # Cachear los promedios en el tracker (necesitamos el state para calcularlos;
-    # lo hacemos en el momento en que aún están disponibles en _run_single_day).
-    # Los trackers ya tienen los valores cacheados en esta versión.
     stats_por_dia = [_build_stats_for_day(r) for r in results]
     rows_by_day = {r.dia: r.rows for r in results}
 
@@ -179,9 +225,20 @@ def run_simulacion(
         "stats_por_dia": stats_por_dia,
         "rows_by_day": rows_by_day,
         "total_dias": len(results),
+        "global_stats_obj": global_stats,
+        "tiempo_ejecucion": _format_elapsed(sim.elapsed_seconds),
+        "exporter": sim.exporter,   # referencia para exportar CSV sin re-simular
+        "last_row": sim.exporter.last_row,
     }
 
-    return _build_day_response(dia=1, offset=offset, limit=limit)
+    day_response = _build_day_response(dia=1, offset=offset, limit=limit)
+
+    return {
+        **day_response,
+        "total_dias_simulados": len(results),
+        "estadisticas_globales": _build_global_stats(_simulacion_activa),
+        "ultimo_registro": _simulacion_activa["last_row"],
+    }
 
 
 @app.get(
@@ -203,12 +260,52 @@ def get_simulacion(
 
 
 @app.get(
+    "/simulacion/ultimo_registro",
+    summary="Último registro de la simulación activa",
+    description=(
+        "Devuelve el último evento registrado en toda la simulación, "
+        "independientemente del día. Útil para la fila sticky en la tabla del front."
+    ),
+)
+def get_ultimo_registro() -> dict:
+    sim = _require_simulacion()
+    last = sim.get("last_row")
+    if last is None:
+        raise HTTPException(status_code=404, detail="No hay registros disponibles.")
+    return {"ultimo_registro": last}
+
+
+@app.get(
+    "/simulacion/exportar",
+    summary="Exportar vector de estado como CSV",
+    description=(
+        "Genera y descarga el archivo CSV completo con todos los registros de la "
+        "simulación activa. El CSV se genera al vuelo desde la memoria RAM sin "
+        "necesidad de re-simular."
+    ),
+)
+def exportar_csv():
+    sim = _require_simulacion()
+    exporter = sim.get("exporter")
+    if exporter is None:
+        raise HTTPException(status_code=500, detail="El exporter no está disponible.")
+
+    csv_bytes = exporter.generate_csv_bytes()
+
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=vector_de_estado.csv"},
+    )
+
+
+@app.get(
     "/estadisticas",
     summary="Estadísticas de todos los días simulados",
     description=(
         "Devuelve un array con las estadísticas de cada jornada simulada, "
-        "incluyendo la hora real de finalización, el tiempo promedio de espera "
-        "en cola por tipo de vehículo y el porcentaje de bloqueo por estación de Frenos. "
+        "incluyendo la hora real de finalización, autos y camionetas atendidas, "
+        "longitud máxima de cola del día y el porcentaje de bloqueo por estación de Frenos. "
         "Diseñado para alimentar gráficos comparativos entre días."
     ),
 )
@@ -218,3 +315,18 @@ def get_estadisticas() -> dict:
         "total_dias": sim["total_dias"],
         "estadisticas": sim["stats_por_dia"],
     }
+
+
+@app.get(
+    "/estadisticas_globales",
+    summary="Estadísticas globales de la simulación activa",
+    description=(
+        "Devuelve las estadísticas agregadas de toda la simulación activa: "
+        "totales de vehículos atendidos, promedios de espera globales, "
+        "promedio de hora de fin de jornada y porcentajes de bloqueo globales. "
+        "Disponible sin necesidad de re-ejecutar la simulación."
+    ),
+)
+def get_estadisticas_globales() -> dict:
+    sim = _require_simulacion()
+    return _build_global_stats(sim)

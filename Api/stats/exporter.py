@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import io
 import csv
-import os
+import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -13,13 +14,15 @@ if TYPE_CHECKING:
 
 # ---------------------------------------------------------------------------
 # Encabezado del CSV
-# Orden: Dia | Evento | Reloj | [Llegadas: RND, Tiempo, Hora] | [Colas] |
-#        [Por línea: Frenos(RND, Tiempo, Estado, Vehículo, FinAtencion),
-#                    Luces(RND, Tiempo, Estado, Vehículo, FinAtencion)] |
-#        [Estadísticas] | [Clientes activos serializado]
+# Orden: Iteracion | Dia | Evento | Reloj | [Llegadas: RND, Tiempo, Hora] |
+#        [Colas] | [Por línea: Frenos(RND, Tiempo, Estado, Vehículo, FinAtencion),
+#                              Luces(RND, Tiempo, Estado, Vehículo, FinAtencion)] |
+#        [Estadísticas: atendidos del día, acum global, espera, bloqueo] |
+#        [Clientes activos como JSON completo]
 # ---------------------------------------------------------------------------
 
 _HEADER_FIXED = [
+    "Iteracion",
     "Dia",
     "Evento",
     "Reloj_min",
@@ -51,8 +54,13 @@ _HEADER_PER_LINE = [
 ]
 
 _HEADER_STATS = [
+    # Contadores del día (se reinician por día)
     "Cant_Autos_Atendidos",
     "Cant_Camionetas_Atendidas",
+    # Acumuladores globales (nunca se reinician)
+    "Acum_Global_Autos",
+    "Acum_Global_Camionetas",
+    # Tiempos de espera del evento actual y acumulado del día
     "Tiempo_Espera_Auto",
     "Acum_Espera_Autos",
     "Tiempo_Espera_Camioneta",
@@ -70,24 +78,39 @@ def _fmt(value: float | None, decimals: int = 4) -> str:
     return f"{value:.{decimals}f}"
 
 
-class CsvExporter:
-    """
-    Genera el archivo CSV del vector de estado de la simulación multi-día.
-    Cada fila corresponde a una transición de estado (procesamiento de un evento)
-    e incluye la columna `Dia` para identificar a qué jornada pertenece.
+def _build_header(num_lineas: int) -> list[str]:
+    """Construye la lista completa de encabezados para N líneas."""
+    header = list(_HEADER_FIXED)
+    for i in range(1, num_lineas + 1):
+        for col in _HEADER_PER_LINE:
+            header.append(col.replace("{i}", str(i)))
+    header.extend(_HEADER_STATS)
+    for i in range(1, num_lineas + 1):
+        header.append(f"Tiempo_Bloqueo_L{i}")
+        header.append(f"Acum_Bloqueo_Frenos_L{i}")
+    header.extend(_HEADER_CLIENTES)
+    return header
 
-    Para cada variable aleatoria muestreada en el evento se incluyen tres columnas:
-      RND_<var>   — número uniforme U(0,1) base usado en la transformada inversa.
-      Tiempo_<var> — duración/tiempo generado por la distribución.
-      Prox/Fin     — hora absoluta resultante (ya existía como columna anterior).
+
+class MemoryExporter:
+    """
+    Mantiene el vector de estado de la simulación multi-día exclusivamente en
+    memoria RAM. No escribe ningún archivo a disco.
+
+    Ventajas:
+      - Sin penalización de I/O durante la simulación (rendimiento óptimo).
+      - El CSV se puede generar al vuelo bajo demanda (endpoint de exportación).
+
+    Para cada fila se incluye:
+      - `Iteracion`: ID global incremental de fila a lo largo de toda la simulación.
+      - `Acum_Global_Autos` / `Acum_Global_Camionetas`: totales que NUNCA se reinician
+        entre días (a diferencia de Cant_Autos_Atendidos que sí se reinicia).
+      - `Clientes_Activos`: serializado como JSON completo en el CSV.
     """
 
-    def __init__(self, output_path: str) -> None:
-        self.output_path = output_path
-        self._file = None
-        self._writer = None
-        self._num_lineas: int = 2  # se actualiza en write_header
-        self.headers: list[str] = []   # cabeceras del CSV
+    def __init__(self) -> None:
+        self._num_lineas: int = 2
+        self.headers: list[str] = []
 
         # Vector de estado en memoria: todos los días indexados
         # {dia: list[dict]}
@@ -96,35 +119,41 @@ class CsvExporter:
         # Filas del día actual (se reinicia en start_day)
         self.current_day_rows: list[dict] = []
 
-    def write_header(self, state: "SimulationState", config: "SimulationConfig") -> None:
-        """Crea el archivo de salida y escribe la fila de encabezados."""
+        # Contador global de iteración (ID de fila incrementa a lo largo de todos los días)
+        self._iteracion: int = 0
+
+        # Acumuladores globales que NO se reinician entre días
+        self._global_autos: int = 0
+        self._global_camionetas: int = 0
+
+        # Offset al inicio de cada día (valores acumulados hasta el fin del día anterior)
+        self._offset_autos: int = 0
+        self._offset_camionetas: int = 0
+
+        # Último row generado (para sticky row en el front)
+        self.last_row: dict | None = None
+
+    def init_header(self, config: "SimulationConfig") -> None:
+        """Inicializa los encabezados y reinicia el índice de datos."""
         self._num_lineas = config.num_lineas
-        os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
-        self._file = open(self.output_path, "w", newline="", encoding="utf-8")
-        self._writer = csv.writer(self._file)
+        self.headers = _build_header(self._num_lineas)
+        self.rows_by_day = {}
+        self._iteracion = 0
+        self._global_autos = 0
+        self._global_camionetas = 0
+        self._offset_autos = 0
+        self._offset_camionetas = 0
+        self.last_row = None
 
-        header = list(_HEADER_FIXED)
-
-        # Agregar columnas por línea
-        for i in range(1, self._num_lineas + 1):
-            for col in _HEADER_PER_LINE:
-                header.append(col.replace("{i}", str(i)))
-
-        # Estadísticas fijas
-        header.extend(_HEADER_STATS)
-        for i in range(1, self._num_lineas + 1):
-            header.append(f"Tiempo_Bloqueo_L{i}")
-            header.append(f"Acum_Bloqueo_Frenos_L{i}")
-
-        header.extend(_HEADER_CLIENTES)
-        self.headers = header          # guardar para el mapeo en memoria
-        self.rows_by_day = {}          # reiniciar el índice multi-día
-        self._writer.writerow(header)
-
-    def start_day(self, dia: int) -> None:
-        """Prepara el exporter para recibir las filas del día indicado."""
+    def start_day(self, dia: int, offset_autos: int = 0, offset_camionetas: int = 0) -> None:
+        """
+        Prepara el exporter para recibir las filas del día indicado.
+        Los offsets representan los totales globales acumulados hasta el fin del día anterior.
+        """
         self.current_day_rows = []
         self.rows_by_day[dia] = self.current_day_rows
+        self._offset_autos = offset_autos
+        self._offset_camionetas = offset_camionetas
 
     def write_row(
         self,
@@ -136,8 +165,12 @@ class CsvExporter:
         row_context: dict[str, float | None],
         dia: int,
     ) -> None:
-        """Serializa el vector de estado actual y lo escribe como una fila CSV."""
+        """Serializa el vector de estado actual y lo guarda en memoria."""
+        self._iteracion += 1
         row: list[str] = []
+
+        # ── Iteración (ID global) ─────────────────────────────────────────
+        row.append(str(self._iteracion))
 
         # ── Día ───────────────────────────────────────────────────────────
         row.append(str(dia))
@@ -180,9 +213,16 @@ class CsvExporter:
             row.append(str(v_luces.id) if v_luces else "")
             row.append(_fmt(line.luces.hora_fin_atencion, 2))
 
-        # ── Estadísticas acumuladas ───────────────────────────────────────
+        # ── Estadísticas acumuladas del día ───────────────────────────────
         row.append(str(state.count_autos_atendidos))
         row.append(str(state.count_camionetas_atendidas))
+
+        # ── Acumuladores globales (offset del día anterior + lo de este día) ──
+        acum_global_autos = self._offset_autos + state.count_autos_atendidos
+        acum_global_camionetas = self._offset_camionetas + state.count_camionetas_atendidas
+        row.append(str(acum_global_autos))
+        row.append(str(acum_global_camionetas))
+
         row.append(_fmt(row_context.get("tiempo_espera_auto"), 4))
         row.append(_fmt(state.total_espera_autos))
         row.append(_fmt(row_context.get("tiempo_espera_camioneta"), 4))
@@ -191,21 +231,48 @@ class CsvExporter:
             row.append(_fmt(row_context.get(f"tiempo_bloqueo_l{line.id}"), 4))
             row.append(_fmt(tracker.acum_bloqueo_frenos.get(line.id, 0.0)))
 
-        # ── Clientes activos serializados ──────────────────────────────────────
-        clientes_json_str = state.snapshot_active_vehicles_as_json()
-        row.append(clientes_json_str)
+        # ── Clientes activos ──────────────────────────────────────────────
+        clientes_snapshot = state.snapshot_active_vehicles()
+        # En CSV: string placeholder (se serializa como JSON en generate_csv_bytes)
+        row.append(str(len(clientes_snapshot)))
 
-        self._writer.writerow(row)
-        # Acumular en memoria como dict para slicing O(1) en la API.
-        # Se inyecta la lista de dicts directamente (no el JSON string)
-        # para que los consumers de la API reciban JSON nativo.
+        # Construir dict para API (Clientes_Activos como lista nativa)
         row_dict = dict(zip(self.headers, row))
-        row_dict["Clientes_Activos"] = state.snapshot_active_vehicles()
-        self.current_day_rows.append(row_dict)
+        row_dict["Clientes_Activos"] = clientes_snapshot
+        row_dict["Acum_Global_Autos"] = str(acum_global_autos)
+        row_dict["Acum_Global_Camionetas"] = str(acum_global_camionetas)
 
-    def close(self) -> None:
-        """Cierra el archivo CSV."""
-        if self._file:
-            self._file.close()
-            self._file = None
-            self._writer = None
+        # Actualizar el tracker con la longitud de cola actual
+        tracker.update_max_cola(state)
+
+        self.current_day_rows.append(row_dict)
+        self.last_row = row_dict
+
+    def generate_csv_bytes(self) -> bytes:
+        """
+        Genera el contenido del CSV completo en memoria y devuelve los bytes.
+        Se invoca al descargar el CSV desde el endpoint de exportación.
+        Clientes_Activos se serializa como JSON completo.
+        """
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(self.headers)
+
+        for dia in sorted(self.rows_by_day.keys()):
+            for row_dict in self.rows_by_day[dia]:
+                clientes = row_dict.get("Clientes_Activos", [])
+                if isinstance(clientes, list):
+                    # JSON completo con todos los datos de cada cliente
+                    clientes_str = json.dumps(clientes, ensure_ascii=False) if clientes else ""
+                else:
+                    clientes_str = str(clientes)
+
+                row_values = []
+                for h in self.headers:
+                    if h == "Clientes_Activos":
+                        row_values.append(clientes_str)
+                    else:
+                        row_values.append(row_dict.get(h, ""))
+                writer.writerow(row_values)
+
+        return buffer.getvalue().encode("utf-8-sig")  # BOM para Excel

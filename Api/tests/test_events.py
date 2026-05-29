@@ -13,10 +13,8 @@ def _make_config(**overrides) -> SimulationConfig:
     """Crea una configuración base con seed fija y jornada mínima."""
     defaults = dict(
         hora_apertura=0.0,
-        hora_cierre_puertas=1.0,    # Cierra casi de inmediato (solo queremos probar eventos)
+        hora_cierre_puertas=1.0,    # Cierra casi de inmediato
         master_seed=0,
-        run_index=1,
-        csv_output_path="output/test_vector.csv",
     )
     defaults.update(overrides)
     return SimulationConfig(**defaults)
@@ -39,11 +37,9 @@ class TestStationBlocking:
         v1 = Vehicle(id=1, tipo=VehicleType.AUTO, hora_llegada=0.0)
         v2 = Vehicle(id=2, tipo=VehicleType.AUTO, hora_llegada=0.0)
 
-        # Poner v1 en frenos y v2 en luces (simulando ambos ocupados)
         frenos.start_service(v1, clock=0.0, fin=5.0)
         luces.start_service(v2, clock=0.0, fin=10.0)
 
-        # v1 termina frenos pero luces está ocupada → bloqueo
         vehicle_done = frenos.finish_service(clock=5.0)
         assert vehicle_done is v1
 
@@ -68,20 +64,17 @@ class TestStationBlocking:
         v1 = Vehicle(id=1, tipo=VehicleType.AUTO, hora_llegada=0.0)
         v2 = Vehicle(id=2, tipo=VehicleType.AUTO, hora_llegada=0.0)
 
-        # Simular estado: v1 bloqueado en frenos, v2 en luces
         luces.start_service(v2, clock=0.0, fin=10.0)
         frenos.start_service(v1, clock=0.0, fin=5.0)
         frenos.finish_service(clock=5.0)
         frenos.current_vehicle = v1
         frenos.set_blocked(clock=5.0)
 
-        # Luces termina → desbloquear frenos
         _ = luces.finish_service(clock=10.0)
         luces.set_free()
 
         assert frenos.is_blocked(), "Frenos sigue bloqueado antes del desbloqueo explícito."
 
-        # Desbloquear manualmente (como haría FinRevisionLuces)
         blocked = frenos.unblock(clock=10.0)
 
         assert blocked is v1, "El vehículo desbloqueado debe ser v1."
@@ -108,7 +101,6 @@ class TestStationBlocking:
         done = frenos.finish_service(clock=5.0)
         assert luces.is_free()
 
-        # Mover a Luces
         luces.start_service(done, clock=5.0, fin=13.0)
 
         assert luces.is_busy()
@@ -119,75 +111,57 @@ class TestStationBlocking:
 class TestFullSimulation:
 
     def test_simulation_runs_without_error(self):
-        """La simulación debe completar la jornada sin lanzar excepciones."""
-        config = SimulationConfig(
-            master_seed=123,
-            run_index=1,
-            csv_output_path="output/test_full.csv",
-        )
+        """La simulación debe completar sin lanzar excepciones y devolver resultados."""
+        config = SimulationConfig(master_seed=123)
         sim = Simulation(config)
-        tracker = sim.run()
+        results, global_stats = sim.run()
 
-        assert tracker.fin_jornada is not None
-        assert tracker.fin_jornada >= config.hora_cierre_puertas
+        assert len(results) > 0
+        assert results[0].tracker.fin_jornada is not None
+        assert results[0].tracker.fin_jornada >= config.hora_cierre_puertas
 
     def test_vehicles_counted_are_positive(self):
         """Deben haberse atendido vehículos en una jornada completa."""
-        config = SimulationConfig(
-            master_seed=7,
-            run_index=1,
-            csv_output_path="output/test_count.csv",
-        )
+        config = SimulationConfig(master_seed=7)
         sim = Simulation(config)
-        sim.run()
+        results, global_stats = sim.run()
 
-        assert sim.state.count_autos_atendidos > 0
-        assert sim.state.count_camionetas_atendidas > 0
+        assert global_stats.total_autos_atendidos > 0
+        assert global_stats.total_camionetas_atendidas > 0
 
     def test_average_waits_are_non_negative(self):
-        """Los tiempos de espera promedio no pueden ser negativos."""
-        config = SimulationConfig(
-            master_seed=99,
-            run_index=1,
-            csv_output_path="output/test_waits.csv",
-        )
+        """Los tiempos de espera promedio globales no pueden ser negativos."""
+        config = SimulationConfig(master_seed=99)
         sim = Simulation(config)
-        tracker = sim.run()
+        _, global_stats = sim.run()
 
-        assert tracker.promedio_espera_autos(sim.state) >= 0.0
-        assert tracker.promedio_espera_camionetas(sim.state) >= 0.0
+        assert global_stats.promedio_espera_autos >= 0.0
+        assert global_stats.promedio_espera_camionetas >= 0.0
 
     def test_block_percentages_between_0_and_100(self):
         """Los porcentajes de bloqueo deben estar entre 0% y 100%."""
-        config = SimulationConfig(
-            master_seed=55,
-            run_index=1,
-            csv_output_path="output/test_block.csv",
-        )
+        config = SimulationConfig(master_seed=55)
         sim = Simulation(config)
-        tracker = sim.run()
+        results, _ = sim.run()
 
-        for i in range(1, config.num_lineas + 1):
-            pct = tracker.porcentaje_bloqueo_frenos(i)
-            assert 0.0 <= pct <= 100.0, f"Porcentaje de bloqueo L{i} fuera de rango: {pct}"
+        for day_result in results:
+            for lid in range(1, config.num_lineas + 1):
+                pct = day_result.tracker.porcentaje_bloqueo_frenos(lid)
+                assert 0.0 <= pct <= 100.0, f"Porcentaje de bloqueo L{lid} fuera de rango: {pct}"
 
     def test_determinism_with_same_seed(self):
         """
         Dos simulaciones con la misma seed deben producir resultados idénticos.
         """
         def run_sim(seed: int) -> tuple:
-            config = SimulationConfig(
-                master_seed=seed,
-                run_index=1,
-                csv_output_path="output/test_det.csv",
-            )
+            config = SimulationConfig(master_seed=seed)
             sim = Simulation(config)
-            tracker = sim.run()
+            results, global_stats = sim.run()
             return (
-                tracker.fin_jornada,
-                sim.state.count_autos_atendidos,
-                sim.state.count_camionetas_atendidas,
-                round(sim.state.total_espera_autos, 6),
+                results[0].tracker.fin_jornada,
+                global_stats.total_autos_atendidos,
+                global_stats.total_camionetas_atendidas,
+                round(global_stats._total_espera_autos, 6),
             )
 
         r1 = run_sim(42)
@@ -196,20 +170,36 @@ class TestFullSimulation:
 
     def test_different_seeds_different_results(self):
         """
-        Dos simulaciones con seeds distintas deben producir al menos un resultado diferente
-        en la mayoría de los casos (test probabilístico).
+        Dos simulaciones con seeds distintas deben producir al menos un resultado diferente.
         """
         def run_sim(seed: int) -> float:
-            config = SimulationConfig(
-                master_seed=seed,
-                run_index=1,
-                csv_output_path="output/test_diff.csv",
-            )
+            config = SimulationConfig(master_seed=seed)
             sim = Simulation(config)
-            tracker = sim.run()
-            return tracker.fin_jornada
+            results, _ = sim.run()
+            return results[0].tracker.fin_jornada
 
         r1 = run_sim(1)
         r2 = run_sim(9999)
-        # Es teóricamente posible que coincidan, pero extremadamente improbable
         assert r1 != r2, "Seeds distintas deberían producir jornadas distintas."
+
+    def test_iteration_ids_are_sequential(self):
+        """La columna Iteracion debe ser un entero incremental positivo."""
+        config = SimulationConfig(master_seed=42, max_dias=2, max_iteraciones=500)
+        sim = Simulation(config)
+        results, _ = sim.run()
+
+        all_rows = []
+        for dr in results:
+            all_rows.extend(dr.rows)
+
+        ids = [int(r["Iteracion"]) for r in all_rows]
+        assert ids == list(range(1, len(ids) + 1)), "Las iteraciones deben ser consecutivas."
+
+    def test_last_row_is_accessible(self):
+        """El exporter debe exponer el último row generado."""
+        config = SimulationConfig(master_seed=42)
+        sim = Simulation(config)
+        sim.run()
+
+        assert sim.exporter.last_row is not None
+        assert "Iteracion" in sim.exporter.last_row

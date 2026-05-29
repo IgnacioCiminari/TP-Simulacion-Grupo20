@@ -1,64 +1,50 @@
-# Documentación de la API de Simulación RTV
+# Documentación de la API de Simulación RTV — v3.0
 
-La API está construida con FastAPI. Por defecto corre en `http://127.0.0.1:8000`.
-Además de esta guía, podés acceder a la documentación interactiva (Swagger) entrando a `http://127.0.0.1:8000/docs` desde tu navegador mientras el servidor está corriendo.
+La API está construida con **FastAPI**. Por defecto corre en `http://127.0.0.1:8000`.
+Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:8000/docs`.
+
+> **Nota**: La semilla de aleatoriedad (`master_seed`) es gestionada internamente por la API y **no se expone al usuario**.
 
 ---
 
 ## 1. Health Check
 
-Verifica que el servidor esté levantado.
-
-- **URL:** `/`
-- **Método:** `GET`
-- **Respuesta Exitosa (200 OK):**
+- **URL:** `GET /`
+- **Descripción:** Verifica que el servidor esté operativo.
 
 ```json
-{
-  "status": "online",
-  "message": "API de Simulación RTV corriendo correctamente en el puerto 8000."
-}
+{ "status": "online", "message": "API de Simulación RTV corriendo correctamente en el puerto 8000." }
 ```
 
 ---
 
 ## 2. Ejecutar Simulación
 
-Ejecuta una nueva simulación multi-día con los parámetros indicados. **Importante:** Hacer esta petición borra de la memoria cualquier simulación que se haya ejecutado previamente.
+- **URL:** `POST /simulacion`
+- **Descripción:** Crea y ejecuta una simulación multi-día. Reemplaza cualquier simulación anterior en memoria. **No escribe archivos a disco** — todo se guarda en RAM.
 
-La simulación se detiene cuando se cumple **cualquiera** de las dos condiciones de corte:
-- Se completaron `max_dias` días.
-- El total acumulado de iteraciones (filas del vector de estado) supera `max_iteraciones`.
+**Condiciones de corte** (se detiene cuando se cumple *cualquiera*):
+- `max_dias` días completados.
+- `max_iteraciones` iteraciones (filas del vector de estado) acumuladas.
 
-En ambos casos, el día en curso siempre se completa antes de cortar.
+**Body (JSON, opcional):** — Si no se envía, usa los valores por defecto.
+```json
+{
+  "hora_apertura": 480.0,
+  "hora_cierre_puertas": 960.0,
+  "media_llegada_auto": 15.0,
+  "media_llegada_camioneta": 30.0,
+  "frenos_min": 4.0,
+  "frenos_max": 7.0,
+  "luces_min": 6.0,
+  "luces_max": 10.0,
+  "num_lineas": 2,
+  "max_dias": 10,
+  "max_iteraciones": 1000
+}
+```
 
-- **URL:** `/simulacion`
-- **Método:** `POST`
-- **Query Params (Opcionales):**
-  - `offset` (integer): A partir de qué registro devolver (default: `0`).
-  - `limit` (integer): Cuántos registros devolver (default: `50`).
-- **Body (JSON, Opcional):**
-  Si no se envía, usa los valores por defecto.
-  ```json
-  {
-    "hora_apertura": 480.0,
-    "hora_cierre_puertas": 960.0,
-    "media_llegada_auto": 15.0,
-    "media_llegada_camioneta": 30.0,
-    "frenos_min": 4.0,
-    "frenos_max": 7.0,
-    "luces_min": 6.0,
-    "luces_max": 10.0,
-    "num_lineas": 2,
-    "master_seed": 42,
-    "max_dias": 10,
-    "max_iteraciones": 1000
-  }
-  ```
-
-- **Respuesta Exitosa (200 OK):**
-  Devuelve las estadísticas del **Día 1** y los primeros registros paginados de ese día.
-
+**Respuesta Exitosa (200 OK):**
 ```json
 {
   "dia": 1,
@@ -66,51 +52,26 @@ En ambos casos, el día en curso siempre se completa antes de cortar.
     "dia": 1,
     "fin_jornada_min": 960.0,
     "fin_jornada_hhmm": "16:00",
-    "promedio_espera_autos_min": 0.0407,
-    "promedio_espera_camionetas_min": 0.2317,
     "autos_atendidos": 21,
     "camionetas_atendidas": 15,
-    "porcentaje_bloqueo_frenos": {
-      "1": 3.2059,
-      "2": 0.0884
-    }
+    "max_cola": 4,
+    "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 }
   },
-  "pagination": {
-    "offset": 0,
-    "limit": 50,
-    "total_records": 120
+  "pagination": { "offset": 0, "limit": 50, "total_records": 120 },
+  "records": [ { "Iteracion": "1", "Dia": "1", "Evento": "Inicialización", "Reloj_min": "480.00", "..." } ],
+  "total_dias_simulados": 10,
+  "estadisticas_globales": {
+    "total_dias": 10,
+    "total_autos_atendidos": 230,
+    "total_camionetas_atendidas": 145,
+    "promedio_espera_autos_min": 0.0812,
+    "promedio_espera_camionetas_min": 0.3471,
+    "promedio_fin_jornada_min": 962.43,
+    "promedio_fin_jornada_hhmm": "16:02",
+    "porcentaje_bloqueo_global": { "1": 2.8412, "2": 0.9231 },
+    "tiempo_ejecucion": "0.43 s"
   },
-  "records": [
-    {
-      "Dia": "1",
-      "Evento": "Inicialización",
-      "Reloj_min": "480.00",
-      "RND_Llegada_Auto": "0.4068",
-      "Tiempo_Entre_Llegadas_Auto": "13.4908",
-      "Prox_Llegada_Auto": "493.49",
-      "Cola_Autos": "0",
-      "Estado_Frenos_L1": "Libre",
-      "Cant_Autos_Atendidos": "0",
-      "Clientes_Activos": [
-        {
-          "id": 3,
-          "tipo": "Auto",
-          "estado": "En_Frenos",
-          "linea": 1,
-          "hora_llegada": 493.49,
-          "hora_inicio_bloqueo": null
-        },
-        {
-          "id": 7,
-          "tipo": "Camioneta",
-          "estado": "En_Cola",
-          "linea": null,
-          "hora_llegada": 501.12,
-          "hora_inicio_bloqueo": null
-        }
-      ]
-    }
-  ]
+  "ultimo_registro": { "Iteracion": "1205", "Dia": "10", "Evento": "Fin Atencion Luces", "..." }
 }
 ```
 
@@ -118,81 +79,84 @@ En ambos casos, el día en curso siempre se completa antes de cortar.
 
 ## 3. Consultar Registros de un Día
 
-Devuelve una porción paginada de los registros del vector de estado del **día indicado**. Las estadísticas de ese día siempre se incluyen en la respuesta.
-
-- **URL:** `/simulacion`
-- **Método:** `GET`
+- **URL:** `GET /simulacion`
 - **Query Params:**
-  - `dia` (integer): Número de jornada a consultar (default: `1`).
-  - `offset` (integer): A partir de qué registro devolver (default: `0`).
-  - `limit` (integer): Cuántos registros devolver (default: `50`).
+  - `dia` (int, default: 1): Jornada a consultar.
+  - `offset` (int, default: 0): Registro inicial de la página.
+  - `limit` (int, default: 50): Tamaño de página.
 
-- **Respuesta Exitosa (200 OK):**
-  Mismo formato JSON que el endpoint `POST` mostrado arriba.
-
-- **Respuesta de Error (404 Not Found):**
-  Si no hay ninguna simulación ejecutada, o si el día solicitado no existe.
-  ```json
-  {
-    "detail": "No hay ninguna simulación ejecutada. Realizá primero un POST /simulacion."
-  }
-  ```
-  ```json
-  {
-    "detail": "El día 5 no existe en la simulación activa. Días disponibles: [1, 2, 3]."
-  }
-  ```
+**Respuesta Exitosa (200 OK):** Igual a la respuesta del `POST` (sin `estadisticas_globales` ni `ultimo_registro`).
 
 ---
 
-## 4. Estadísticas de Todos los Días
+## 4. Último Registro de la Simulación
 
-Devuelve un array con las estadísticas de cada jornada simulada. Diseñado para alimentar gráficos comparativos entre días.
+- **URL:** `GET /simulacion/ultimo_registro`
+- **Descripción:** Devuelve el último evento registrado en toda la simulación (útil para la fila sticky de la tabla del front).
 
-- **URL:** `/estadisticas`
-- **Método:** `GET`
-- **No requiere parámetros.**
+```json
+{ "ultimo_registro": { "Iteracion": "1205", "Dia": "10", "Evento": "Fin Atencion Luces", "..." } }
+```
 
-- **Respuesta Exitosa (200 OK):**
+---
+
+## 5. Exportar CSV
+
+- **URL:** `GET /simulacion/exportar`
+- **Descripción:** Genera y descarga el CSV completo del vector de estado desde la memoria RAM. Incluye todas las columnas (incluyendo `Iteracion`) para todas las jornadas simuladas.
+- **Respuesta:** `text/csv` con `Content-Disposition: attachment; filename=vector_de_estado.csv`. Codificado en UTF-8 con BOM para compatibilidad con Excel.
+
+---
+
+## 6. Estadísticas por Día (para Gráficos)
+
+- **URL:** `GET /estadisticas`
+- **Descripción:** Array con las estadísticas de cada jornada. Incluye `max_cola` (longitud máxima de cola del día) y `porcentaje_bloqueo_frenos` dinámico por línea.
 
 ```json
 {
-  "total_dias": 3,
+  "total_dias": 10,
   "estadisticas": [
     {
       "dia": 1,
       "fin_jornada_min": 960.0,
       "fin_jornada_hhmm": "16:00",
-      "promedio_espera_autos_min": 0.0407,
-      "promedio_espera_camionetas_min": 0.2317,
       "autos_atendidos": 21,
       "camionetas_atendidas": 15,
-      "porcentaje_bloqueo_frenos": {
-        "1": 3.2059,
-        "2": 0.0884
-      }
-    },
-    {
-      "dia": 2,
-      "fin_jornada_min": 965.86,
-      "fin_jornada_hhmm": "16:05",
-      "promedio_espera_autos_min": 0.1040,
-      "promedio_espera_camionetas_min": 0.7739,
-      "autos_atendidos": 31,
-      "camionetas_atendidas": 17,
-      "porcentaje_bloqueo_frenos": {
-        "1": 2.4578,
-        "2": 1.5686
-      }
+      "max_cola": 4,
+      "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 }
     }
   ]
 }
 ```
 
-- **Respuesta de Error (404 Not Found):**
-  Si intentás hacer un `GET` antes de haber hecho un `POST` inicial.
-  ```json
-  {
-    "detail": "No hay ninguna simulación ejecutada. Realizá primero un POST /simulacion."
-  }
-  ```
+---
+
+## 7. Estadísticas Globales
+
+- **URL:** `GET /estadisticas_globales`
+- **Descripción:** Estadísticas agregadas de toda la simulación activa, sin necesidad de re-ejecutar. Disponible inmediatamente tras ejecutar un `POST /simulacion`.
+
+```json
+{
+  "total_dias": 10,
+  "total_autos_atendidos": 230,
+  "total_camionetas_atendidas": 145,
+  "promedio_espera_autos_min": 0.0812,
+  "promedio_espera_camionetas_min": 0.3471,
+  "promedio_fin_jornada_min": 962.43,
+  "promedio_fin_jornada_hhmm": "16:02",
+  "porcentaje_bloqueo_global": { "1": 2.8412, "2": 0.9231 },
+  "tiempo_ejecucion": "0.43 s"
+}
+```
+
+---
+
+## Errores Comunes
+
+| Código | Descripción |
+|--------|-------------|
+| `404`  | No hay simulación activa. Ejecutar primero `POST /simulacion`. |
+| `404`  | El día solicitado no existe. Ver `detail` para los días disponibles. |
+| `500`  | Error interno del servidor. Ver logs del servidor. |

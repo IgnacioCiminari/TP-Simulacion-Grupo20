@@ -4,6 +4,7 @@ import { Sun, Moon, Activity } from "lucide-react";
 
 const navItems = [
     { to: "/config", label: "Configuración" },
+    { to: "/stats", label: "Estadísticas" },
     { to: "/table", label: "Tabla" },
     { to: "/graph", label: "Gráficos" },
 ];
