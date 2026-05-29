@@ -13,13 +13,14 @@ if TYPE_CHECKING:
 
 # ---------------------------------------------------------------------------
 # Encabezado del CSV
-# Orden: Evento | Reloj | [Llegadas: RND, Tiempo, Hora] | [Colas] |
+# Orden: Dia | Evento | Reloj | [Llegadas: RND, Tiempo, Hora] | [Colas] |
 #        [Por línea: Frenos(RND, Tiempo, Estado, Vehículo, FinAtencion),
 #                    Luces(RND, Tiempo, Estado, Vehículo, FinAtencion)] |
 #        [Estadísticas] | [Clientes activos serializado]
 # ---------------------------------------------------------------------------
 
 _HEADER_FIXED = [
+    "Dia",
     "Evento",
     "Reloj_min",
     # ── Llegada Auto ──────────────────────────────────────────────────────
@@ -71,8 +72,9 @@ def _fmt(value: float | None, decimals: int = 4) -> str:
 
 class CsvExporter:
     """
-    Genera el archivo CSV del vector de estado de la simulación.
-    Cada fila corresponde a una transición de estado (procesamiento de un evento).
+    Genera el archivo CSV del vector de estado de la simulación multi-día.
+    Cada fila corresponde a una transición de estado (procesamiento de un evento)
+    e incluye la columna `Dia` para identificar a qué jornada pertenece.
 
     Para cada variable aleatoria muestreada en el evento se incluyen tres columnas:
       RND_<var>   — número uniforme U(0,1) base usado en la transformada inversa.
@@ -86,7 +88,13 @@ class CsvExporter:
         self._writer = None
         self._num_lineas: int = 2  # se actualiza en write_header
         self.headers: list[str] = []   # cabeceras del CSV
-        self.rows: list[dict] = []     # vector de estado en memoria (para la API)
+
+        # Vector de estado en memoria: todos los días indexados
+        # {dia: list[dict]}
+        self.rows_by_day: dict[int, list[dict]] = {}
+
+        # Filas del día actual (se reinicia en start_day)
+        self.current_day_rows: list[dict] = []
 
     def write_header(self, state: "SimulationState", config: "SimulationConfig") -> None:
         """Crea el archivo de salida y escribe la fila de encabezados."""
@@ -110,8 +118,13 @@ class CsvExporter:
 
         header.extend(_HEADER_CLIENTES)
         self.headers = header          # guardar para el mapeo en memoria
-        self.rows = []                 # reiniciar vector de estado en memoria
+        self.rows_by_day = {}          # reiniciar el índice multi-día
         self._writer.writerow(header)
+
+    def start_day(self, dia: int) -> None:
+        """Prepara el exporter para recibir las filas del día indicado."""
+        self.current_day_rows = []
+        self.rows_by_day[dia] = self.current_day_rows
 
     def write_row(
         self,
@@ -121,9 +134,13 @@ class CsvExporter:
         config: "SimulationConfig",
         fel: "EventQueue",
         row_context: dict[str, float | None],
+        dia: int,
     ) -> None:
         """Serializa el vector de estado actual y lo escribe como una fila CSV."""
         row: list[str] = []
+
+        # ── Día ───────────────────────────────────────────────────────────
+        row.append(str(dia))
 
         # ── Evento y reloj ────────────────────────────────────────────────
         row.append(event_name)
@@ -174,12 +191,17 @@ class CsvExporter:
             row.append(_fmt(row_context.get(f"tiempo_bloqueo_l{line.id}"), 4))
             row.append(_fmt(tracker.acum_bloqueo_frenos.get(line.id, 0.0)))
 
-        # ── Clientes activos serializados (Opción A) ──────────────────────
-        row.append(state.snapshot_active_vehicles())
+        # ── Clientes activos serializados ──────────────────────────────────────
+        clientes_json_str = state.snapshot_active_vehicles_as_json()
+        row.append(clientes_json_str)
 
         self._writer.writerow(row)
-        # Acumular en memoria como dict para slicing O(1) en la API
-        self.rows.append(dict(zip(self.headers, row)))
+        # Acumular en memoria como dict para slicing O(1) en la API.
+        # Se inyecta la lista de dicts directamente (no el JSON string)
+        # para que los consumers de la API reciban JSON nativo.
+        row_dict = dict(zip(self.headers, row))
+        row_dict["Clientes_Activos"] = state.snapshot_active_vehicles()
+        self.current_day_rows.append(row_dict)
 
     def close(self) -> None:
         """Cierra el archivo CSV."""

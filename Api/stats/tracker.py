@@ -8,11 +8,13 @@ if TYPE_CHECKING:
 
 class StatsTracker:
     """
-    Centraliza y calcula las métricas de salida de la simulación.
+    Centraliza y calcula las métricas de salida de un único día de simulación.
 
     Acumula tiempos de espera por tipo de vehículo y tiempos de bloqueo por
-    estación de Frenos (indexados por line_id). Al finalizar la simulación,
-    computa los promedios y porcentajes.
+    estación de Frenos (indexados por line_id). Al finalizar el día, se llama
+    a `cache_final_stats()` para persistir los promedios y conteos que
+    dependen del estado mutable (SimulationState), antes de que ese estado
+    sea descartado al comenzar el siguiente día.
     """
 
     def __init__(self, config: "SimulationConfig") -> None:
@@ -23,6 +25,12 @@ class StatsTracker:
 
         # Hora de finalización de la jornada
         self.fin_jornada: float | None = None
+
+        # Valores cacheados al cierre del día (llenados por cache_final_stats)
+        self.promedio_espera_autos_cached: float = 0.0
+        self.promedio_espera_camionetas_cached: float = 0.0
+        self.autos_atendidos: int = 0
+        self.camionetas_atendidas: int = 0
 
     # ------------------------------------------------------------------
     # Cálculo de métricas finales
@@ -65,8 +73,19 @@ class StatsTracker:
         minutos = total_minutos % 60
         return f"{horas:02d}:{minutos:02d}"
 
+    def cache_final_stats(self, state) -> None:
+        """
+        Persiste en el tracker los valores que dependen del state mutable,
+        antes de que el estado sea reiniciado para el siguiente día.
+        Debe llamarse al cierre de cada jornada.
+        """
+        self.promedio_espera_autos_cached = self.promedio_espera_autos(state)
+        self.promedio_espera_camionetas_cached = self.promedio_espera_camionetas(state)
+        self.autos_atendidos = state.count_autos_atendidos
+        self.camionetas_atendidas = state.count_camionetas_atendidas
+
     def report(self, state) -> str:
-        """Genera un reporte de texto de los resultados finales."""
+        """Genera un reporte de texto de los resultados finales del día (requiere state)."""
         lines = [
             "=" * 60,
             "  RESULTADOS DE LA SIMULACIÓN - RTV",
@@ -83,4 +102,23 @@ class StatsTracker:
                 f"  Bloqueo Frenos Línea {line_id}:            {pct:.2f}%"
             )
         lines.append("=" * 60)
+        return "\n".join(lines)
+
+    def report_cached(self) -> str:
+        """
+        Genera un reporte de texto usando los valores cacheados por cache_final_stats().
+        No requiere acceso al state — útil después de que el día fue completado.
+        """
+        lines = [
+            f"  Hora de fin de jornada:           {self.hora_fin_jornada_hhmm()} ({self.fin_jornada:.2f} min)",
+            f"  Tiempo promedio espera autos:      {self.promedio_espera_autos_cached:.4f} min",
+            f"  Tiempo promedio espera camionetas: {self.promedio_espera_camionetas_cached:.4f} min",
+            f"  Autos atendidos:                  {self.autos_atendidos}",
+            f"  Camionetas atendidas:              {self.camionetas_atendidas}",
+        ]
+        for line_id in sorted(self.acum_bloqueo_frenos.keys()):
+            pct = self.porcentaje_bloqueo_frenos(line_id)
+            lines.append(
+                f"  Bloqueo Frenos Línea {line_id}:            {pct:.2f}%"
+            )
         return "\n".join(lines)

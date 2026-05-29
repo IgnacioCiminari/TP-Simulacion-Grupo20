@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from entities.line import InspectionLine
 from entities.queue import PriorityVehicleQueue
 
@@ -69,31 +71,42 @@ class SimulationState:
                 return False
         return True
 
-    def snapshot_active_vehicles(self) -> str:
+    def snapshot_active_vehicles(self) -> list[dict]:
         """
-        Serializa el estado de todos los vehículos activos en el sistema
-        (tanto en colas como en estaciones) en formato de texto para el CSV.
-        Formato: [Id:X, Tipo:Y, Estado:Z, Linea:N, Hora_Llegada:T, Hora_Inicio_Bloqueo:T|None]; ...
+        Devuelve el estado de todos los vehículos activos en el sistema
+        (tanto en colas como en estaciones) como una lista de dicts estructurados.
         """
-        parts: list[str] = []
+        entries: list[dict] = []
 
-        def _fmt_v(v, linea: int | None = None) -> str:
-            bloqueo = f"{v.hora_inicio_bloqueo:.2f}" if v.hora_inicio_bloqueo is not None else "None"
-            lin = str(linea) if linea is not None else "None"
-            return (
-                f"[Id:{v.id}, Tipo:{v.tipo.value}, Estado:{v.estado.value}, "
-                f"Linea:{lin}, Hora_Llegada:{v.hora_llegada:.2f}, "
-                f"Hora_Inicio_Bloqueo:{bloqueo}]"
-            )
+        def _to_dict(v, linea: int | None = None) -> dict:
+            return {
+                "id": v.id,
+                "tipo": v.tipo.value,
+                "estado": v.estado.value,
+                "linea": linea,
+                "hora_llegada": round(v.hora_llegada, 2),
+                "hora_inicio_bloqueo": (
+                    round(v.hora_inicio_bloqueo, 2)
+                    if v.hora_inicio_bloqueo is not None
+                    else None
+                ),
+            }
 
         # Vehículos en la cola de espera
         for v in self.entry_queue.all_vehicles():
-            parts.append(_fmt_v(v, linea=None))
+            entries.append(_to_dict(v, linea=None))
 
         # Vehículos en estaciones
         for line in self.lines:
             for station in (line.frenos, line.luces):
                 if station.current_vehicle is not None:
-                    parts.append(_fmt_v(station.current_vehicle, linea=line.id))
+                    entries.append(_to_dict(station.current_vehicle, linea=line.id))
 
-        return "; ".join(parts) if parts else ""
+        return entries
+
+    def snapshot_active_vehicles_as_json(self) -> str:
+        """
+        Serializa snapshot_active_vehicles() como JSON string.
+        Usado exclusivamente para persistir la columna en el CSV.
+        """
+        return json.dumps(self.snapshot_active_vehicles(), ensure_ascii=False)

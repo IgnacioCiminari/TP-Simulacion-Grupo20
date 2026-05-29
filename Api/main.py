@@ -35,16 +35,27 @@ def main() -> None:
         # ── Reproducibilidad ──────────────────────────────────────────────────
         # master_seed=None para comportamiento no determinístico.
         master_seed=42,
-        run_index=1,   # Índice del día simulado (1, 2, 3... para múltiples días)
+
+        # ── Condiciones de corte (se detiene al cumplirse CUALQUIERA) ─────────
+        max_dias=10,           # número máximo de días a simular
+        max_iteraciones=1_000, # umbral de iteraciones totales acumuladas
     )
 
-    print(f"Iniciando simulación (seed maestra={config.master_seed}, día={config.run_index})...")
+    print(
+        f"Iniciando simulación (seed maestra={config.master_seed}, "
+        f"max_dias={config.max_dias}, max_iteraciones={config.max_iteraciones})..."
+    )
 
     sim = Simulation(config)
-    tracker = sim.run()
+    results = sim.run()
 
-    print(tracker.report(sim.state))
-    print(f"\nVector de estado guardado en: {config.csv_output_path}")
+    for day_result in results:
+        print(f"\n{'=' * 60}")
+        print(f"  DÍA {day_result.dia}")
+        print(day_result.tracker.report_cached())
+
+    print(f"\nTotal de días simulados: {len(results)}")
+    print(f"Vector de estado guardado en: {config.csv_output_path}")
 
 
 if __name__ == "__main__":
