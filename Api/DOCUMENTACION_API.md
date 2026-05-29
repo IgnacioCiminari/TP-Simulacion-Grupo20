@@ -91,7 +91,24 @@ En ambos casos, el día en curso siempre se completa antes de cortar.
       "Cola_Autos": "0",
       "Estado_Frenos_L1": "Libre",
       "Cant_Autos_Atendidos": "0",
-      "Clientes_Activos": ""
+      "Clientes_Activos": [
+        {
+          "id": 3,
+          "tipo": "Auto",
+          "estado": "En_Frenos",
+          "linea": 1,
+          "hora_llegada": 493.49,
+          "hora_inicio_bloqueo": null
+        },
+        {
+          "id": 7,
+          "tipo": "Camioneta",
+          "estado": "En_Cola",
+          "linea": null,
+          "hora_llegada": 501.12,
+          "hora_inicio_bloqueo": null
+        }
+      ]
     }
   ]
 }

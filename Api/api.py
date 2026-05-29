@@ -18,6 +18,7 @@ Uso:
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from core.simulation import Simulation, SimulationConfig
@@ -26,6 +27,14 @@ app = FastAPI(
     title="RTV Simulation API",
     description="API para ejecutar y consultar simulaciones de la Planta de Revisión Técnica Vehicular.",
     version="2.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ─────────────────────────────────────────────────────────────────────────────

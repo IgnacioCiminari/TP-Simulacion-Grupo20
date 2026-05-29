@@ -191,12 +191,16 @@ class CsvExporter:
             row.append(_fmt(row_context.get(f"tiempo_bloqueo_l{line.id}"), 4))
             row.append(_fmt(tracker.acum_bloqueo_frenos.get(line.id, 0.0)))
 
-        # ── Clientes activos serializados ─────────────────────────────────
-        row.append(state.snapshot_active_vehicles())
+        # ── Clientes activos serializados ──────────────────────────────────────
+        clientes_json_str = state.snapshot_active_vehicles_as_json()
+        row.append(clientes_json_str)
 
         self._writer.writerow(row)
-        # Acumular en memoria como dict para slicing O(1) en la API
+        # Acumular en memoria como dict para slicing O(1) en la API.
+        # Se inyecta la lista de dicts directamente (no el JSON string)
+        # para que los consumers de la API reciban JSON nativo.
         row_dict = dict(zip(self.headers, row))
+        row_dict["Clientes_Activos"] = state.snapshot_active_vehicles()
         self.current_day_rows.append(row_dict)
 
     def close(self) -> None:

@@ -223,7 +223,7 @@ El CSV contiene todos los días en una única tabla. La primera columna `Dia` id
 | `Tiempo_Bloqueo_L{i}` | Tiempo de bloqueo de la estación de Frenos de la línea $i$ liberado en el evento actual |
 | `Acum_Bloqueo_Frenos_L{i}` | Tiempo acumulado en que la estación de Frenos de la línea $i$ estuvo bloqueada |
 | **Estado del Sistema** | |
-| `Clientes_Activos` | Snapshot serializado de vehículos activos: `[Id:X, Tipo:Y, Estado:Z, Linea:N, Hora_Llegada:T, Hora_Inicio_Bloqueo:T|None]; ...` |
+| `Clientes_Activos` | Snapshot de vehículos activos. En el CSV se persiste como JSON array string; la API lo devuelve como array de objetos JSON. Cada objeto tiene los campos: `id`, `tipo`, `estado`, `linea`, `hora_llegada`, `hora_inicio_bloqueo`. |
 
 ---
 
