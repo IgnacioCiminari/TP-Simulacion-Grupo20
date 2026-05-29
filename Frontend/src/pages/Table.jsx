@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSimulation } from "../context/SimulationContext";
 import simulationService from "../services/simulation.service";
 import { toast } from "sonner";
-import { Clock, Car, Truck, SlidersHorizontal, Search, Download, AlarmClock } from "lucide-react";
+import { Clock, Car, Truck, SlidersHorizontal, Search, Download, Users, AlarmClock } from "lucide-react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,8 +29,7 @@ function minToHHMMSS(val) {
     const h = Math.floor(totalSec / 3600);
     const m = Math.floor((totalSec % 3600) / 60);
     const s = Math.floor(totalSec % 60);
-    const cs = Math.round((totalSec % 1) * 100);
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(cs).padStart(2, "0")}`;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,7 +83,7 @@ function buildColumnGroups(sampleKeys) {
     groups.push(
         {
             id: "stats_atendidos", label: "Atendidos",
-            keys: ["Cant_Autos_Atendidos", "Cant_Camionetas_Atendidas"],
+            keys: ["Cant_Autos_Atendidos", "Acum_Global_Autos", "Cant_Camionetas_Atendidas", "Acum_Global_Camionetas"],
         },
         {
             id: "stats_espera", label: "Tiempos de Espera",
@@ -123,8 +122,10 @@ const SHORT_LABELS = {
     Prox_Llegada_Camioneta: "Próx.",
     Cola_Autos: "Autos",
     Cola_Camionetas: "Camionetas",
-    Cant_Autos_Atendidos: "Autos",
-    Cant_Camionetas_Atendidas: "Camionetas",
+    Cant_Autos_Atendidos: "Autos Día",
+    Acum_Global_Autos: "Autos Total",
+    Cant_Camionetas_Atendidas: "Cam. Día",
+    Acum_Global_Camionetas: "Cam. Total",
     Tiempo_Espera_Auto: "T. Espera",
     Acum_Espera_Autos: "Acum.",
     Tiempo_Espera_Camioneta: "T. Espera",
@@ -245,7 +246,7 @@ function DataRow({ record, visibleKeys, timeMode, isSticky = false }) {
     return (
         <tr className={base}>
             {visibleKeys.map(key => (
-                <td key={key} className="whitespace-nowrap px-3 py-2 text-xs text-zinc-700 dark:text-zinc-300">
+                <td key={key} className="whitespace-nowrap border-r border-zinc-200 px-3 py-2 text-center align-middle text-xs text-zinc-700 last:border-r-0 dark:border-zinc-800 dark:text-zinc-300">
                     <CellValue colKey={key} value={record[key]} timeMode={timeMode} />
                 </td>
             ))}
@@ -406,7 +407,7 @@ export default function Table() {
                         color="bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
                     />
                     <StatCard
-                        icon={AlarmClock}
+                        icon={Users}
                         label="Máx. Cola del Día"
                         value={stats.max_cola != null ? `${stats.max_cola} veh.` : "—"}
                         color="bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400"
@@ -442,22 +443,22 @@ export default function Table() {
                     )}
                 </form>
 
-                {/* Toggle formato de tiempo */}
-                <button
-                    onClick={() => setTimeMode(v => !v)}
-                    className={[
-                        "flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
-                        timeMode
-                            ? "border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-400"
-                            : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-                    ].join(" ")}
-                >
-                    <AlarmClock className="h-3.5 w-3.5" />
-                    {timeMode ? "HH:MM:SS" : "Minutos"}
-                </button>
+                {/* Controles de la derecha (Columnas y Formato) */}
+                <div className="relative ml-auto flex gap-3">
+                    {/* Toggle formato de tiempo */}
+                    <button
+                        onClick={() => setTimeMode(v => !v)}
+                        className={[
+                            "flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
+                            timeMode
+                                ? "border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-400"
+                                : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
+                        ].join(" ")}
+                    >
+                        <AlarmClock className="h-3.5 w-3.5" />
+                        {timeMode ? "HH:MM:SS" : "Minutos"}
+                    </button>
 
-                {/* Filtro de columnas */}
-                <div className="relative ml-auto">
                     <button
                         onClick={() => setShowColumnMenu(v => !v)}
                         className="flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
@@ -532,7 +533,7 @@ export default function Table() {
                                     {visibleKeys.map(key => (
                                         <th
                                             key={key}
-                                            className="whitespace-nowrap px-3 py-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400"
+                                            className="whitespace-nowrap border-r border-zinc-200 px-3 py-2 text-center align-middle text-xs font-semibold text-zinc-500 last:border-r-0 dark:border-zinc-700 dark:text-zinc-400"
                                         >
                                             {getShortLabel(key)}
                                         </th>

@@ -5,10 +5,11 @@ import { toast } from "sonner";
 import {
     BarChart, Bar,
     AreaChart, Area,
+    ScatterChart, Scatter, ZAxis,
     XAxis, YAxis, CartesianGrid, Tooltip, Legend,
     ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, AlertTriangle, BarChart3, Clock, Loader2 } from "lucide-react";
+import { TrendingUp, AlertTriangle, BarChart3, Clock, Loader2, Activity } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Top N días por métrica (descendente)
@@ -76,7 +77,8 @@ function ChartCard({ title, subtitle, icon: Icon, children }) {
 // Paleta de colores para N líneas de frenos
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BRAKE_COLORS = ["#ef4444", "#f97316", "#eab308", "#a855f7", "#06b6d4", "#10b981"];
+const BLOQUEO_COLORS = ["#ef4444", "#f97316", "#eab308", "#a855f7", "#06b6d4", "#10b981"];
+const SERVICIO_COLORS = ["#10b981", "#059669", "#047857", "#34d399", "#6ee7b7", "#a7f3d0"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Normalizar: aplanar porcentaje_bloqueo_frenos y calcular ocupación
@@ -84,13 +86,18 @@ const BRAKE_COLORS = ["#ef4444", "#f97316", "#eab308", "#a855f7", "#06b6d4", "#1
 
 function normalizeDay(d) {
     const bloqueo = d.porcentaje_bloqueo_frenos || {};
+    const totalServicio = d.total_servicio_min || {};
     const lineIds = Object.keys(bloqueo).map(Number).sort((a, b) => a - b);
 
-    // Ocupación = 100 - promedio de bloqueo de todas las líneas
-    const avgBloqueo = lineIds.length
-        ? lineIds.reduce((s, lid) => s + (bloqueo[String(lid)] ?? 0), 0) / lineIds.length
+    // Suma de bloqueos para el scatter
+    const sumBloqueo = lineIds.length
+        ? lineIds.reduce((s, lid) => s + (bloqueo[String(lid)] ?? 0), 0)
         : 0;
-    const ocupacion = Math.max(0, 100 - avgBloqueo);
+
+    const waitAuto = d.promedio_espera_autos_min ?? 0;
+    const waitCam = d.promedio_espera_camionetas_min ?? 0;
+    // Un promedio simple o suma (para visualización correlacional)
+    const avgEspera = (waitAuto + waitCam) / 2;
 
     const flat = {
         dia: d.dia,
@@ -99,10 +106,13 @@ function normalizeDay(d) {
         camionetas_atendidas: d.camionetas_atendidas ?? 0,
         fin_jornada_min: d.fin_jornada_min ?? 0,
         fin_jornada_hhmm: d.fin_jornada_hhmm ?? "",
-        ocupacion: parseFloat(ocupacion.toFixed(2)),
+        avg_bloqueo: parseFloat(sumBloqueo.toFixed(2)),
+        avg_espera: parseFloat(avgEspera.toFixed(2)),
     };
+
     for (const lid of lineIds) {
         flat[`bloqueo_l${lid}`] = parseFloat((bloqueo[String(lid)] ?? 0).toFixed(2));
+        flat[`servicio_l${lid}`] = parseFloat((totalServicio[String(lid)] ?? 0).toFixed(2));
     }
     return flat;
 }
@@ -187,11 +197,11 @@ export default function Graph() {
         return topWorstDays(rawData, d => lineIds.reduce((s, lid) => s + (d[`bloqueo_l${lid}`] ?? 0), 0), Math.min(TOP_N, rawData.length));
     }, [rawData, lineIds]);
 
-    // ── Gráfico 2: Top días con mayor ocupación de servidores ─────────────
-    const topOcupacionData = useMemo(() => {
-        if (!rawData) return [];
-        return topWorstDays(rawData, d => d.ocupacion, Math.min(TOP_N, rawData.length));
-    }, [rawData]);
+    // ── Gráfico 2: Top días con mayor tiempo de atención (Servicio) ──────
+    const topServicioData = useMemo(() => {
+        if (!rawData || lineIds.length === 0) return [];
+        return topWorstDays(rawData, d => lineIds.reduce((s, lid) => s + (d[`servicio_l${lid}`] ?? 0), 0), Math.min(TOP_N, rawData.length));
+    }, [rawData, lineIds]);
 
     // ── Gráfico 3: Vehículos atendidos por día (serie temporal) ───────────
     const atendidosData = useMemo(() => {
@@ -199,10 +209,57 @@ export default function Graph() {
         return downsample(rawData, groupSize);
     }, [rawData, groupSize]);
 
-    // ── Gráfico 4: Top peores días por hora de cierre ─────────────────────
-    const worstCierreData = useMemo(() => {
+    // ── Gráfico 4: Correlación Espera vs Bloqueo (Scatter) ────────────────
+    const scatterData = useMemo(() => {
         if (!rawData) return [];
-        return topWorstDays(rawData, d => d.fin_jornada_min, Math.min(TOP_N, rawData.length));
+        // Filtramos outliars extremos o días sin espera
+        return rawData.map(d => ({
+            dia: d.dia,
+            bloqueo: d.avg_bloqueo,
+            espera: d.avg_espera,
+        }));
+    }, [rawData]);
+
+    // ── Gráfico 5: Histograma de Distribución de Horas de Cierre ──────────
+    const histCierreData = useMemo(() => {
+        if (!rawData || rawData.length === 0) return [];
+        // Aislar la hora de cierre por defecto (el mínimo > 0) y agrupar el resto en 5 min
+        const mins = rawData.map(d => d.fin_jornada_min).filter(m => m > 0);
+        if (mins.length === 0) return [];
+        const minCierre = Math.min(...mins);
+
+        const bins = {};
+        for (const d of rawData) {
+            const min = d.fin_jornada_min;
+            if (min <= 0) continue;
+            
+            if (min === minCierre) {
+                bins["default"] = (bins["default"] || 0) + 1;
+            } else {
+                const binStart = Math.floor(min / 5) * 5;
+                bins[binStart] = (bins[binStart] || 0) + 1;
+            }
+        }
+        
+        // Convertir a array y ordenar
+        const keys = Object.keys(bins);
+        const sortedKeys = keys.sort((a, b) => {
+            if (a === "default") return -1;
+            if (b === "default") return 1;
+            return Number(a) - Number(b);
+        });
+        
+        return sortedKeys.map(k => {
+            if (k === "default") {
+                return { binStart: minCierre, label: `${minToHHMM(minCierre)} (Puntual)`, frecuencia: bins[k] };
+            }
+            const b = Number(k);
+            return {
+                binStart: b,
+                label: `${minToHHMM(b)} – ${minToHHMM(b + 5)}`,
+                frecuencia: bins[k],
+            };
+        });
     }, [rawData]);
 
     // ── Estados de UI ──────────────────────────────────────────────────────
@@ -268,7 +325,7 @@ export default function Graph() {
                                 key={lid}
                                 dataKey={`bloqueo_l${lid}`}
                                 name={`Bloqueo L${lid} (%)`}
-                                fill={BRAKE_COLORS[idx % BRAKE_COLORS.length]}
+                                fill={BLOQUEO_COLORS[idx % BLOQUEO_COLORS.length]}
                                 radius={[4, 4, 0, 0]}
                                 stackId="bloqueo"
                             />
@@ -277,24 +334,32 @@ export default function Graph() {
                 </ResponsiveContainer>
             </ChartCard>
 
-            {/* ── Gráfico 2: Top ocupación de servidores ─── */}
+            {/* ── Gráfico 2: Top atención de servidores ─── */}
             <ChartCard
                 icon={TrendingUp}
-                title="Top días con mayor ocupación de servidores"
-                subtitle={`Los ${topOcupacionData.length} días donde los servidores estuvieron más ocupados (menos tiempo bloqueados)`}
+                title="Top días con mayor tiempo de atención"
+                subtitle={`Los ${topServicioData.length} días donde los servidores estuvieron más tiempo en servicio activo`}
             >
                 <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={topOcupacionData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                    <BarChart data={topServicioData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid, #e4e4e7)" />
                         <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} />
                         <YAxis
-                            domain={[0, 100]}
                             tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} axisLine={false}
-                            tickFormatter={v => `${v}%`}
+                            tickFormatter={v => `${v}m`}
                         />
                         <Tooltip content={<CustomTooltip />} />
                         <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
-                        <Bar dataKey="ocupacion" name="Ocupación (%)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                        {lineIds.map((lid, idx) => (
+                            <Bar
+                                key={lid}
+                                dataKey={`servicio_l${lid}`}
+                                name={`Servicio L${lid} (min)`}
+                                fill={SERVICIO_COLORS[idx % SERVICIO_COLORS.length]}
+                                radius={[4, 4, 0, 0]}
+                                stackId="servicio"
+                            />
+                        ))}
                     </BarChart>
                 </ResponsiveContainer>
             </ChartCard>
@@ -303,7 +368,7 @@ export default function Graph() {
             <ChartCard
                 icon={BarChart3}
                 title="Productividad por Jornada"
-                subtitle="Cantidad de vehículos atendidos por día (o promedio por período si está agrupado)"
+                subtitle="Cantidad total de vehículos atendidos por día (promedio si está agrupado)"
             >
                 <ResponsiveContainer width="100%" height={300}>
                     <AreaChart data={atendidosData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
@@ -338,37 +403,79 @@ export default function Graph() {
                 </ResponsiveContainer>
             </ChartCard>
 
-            {/* ── Gráfico 4: Top peores días por hora de cierre ─── */}
+            {/* ── Gráfico 4: Correlación Espera vs Bloqueo ─── */}
+            <ChartCard
+                icon={Activity}
+                title="Impacto del Bloqueo en la Espera"
+                subtitle="Relación entre el % de bloqueo total diario y el tiempo de espera promedio"
+            >
+                <ResponsiveContainer width="100%" height={260}>
+                    <ScatterChart margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid, #e4e4e7)" />
+                        <XAxis
+                            type="number"
+                            dataKey="bloqueo"
+                            name="Bloqueo Total (%)"
+                            tick={{ fontSize: 11, fill: "#71717a" }}
+                            tickLine={false}
+                            tickFormatter={v => `${v}%`}
+                        />
+                        <YAxis
+                            type="number"
+                            dataKey="espera"
+                            name="Espera Promedio (min)"
+                            tick={{ fontSize: 11, fill: "#71717a" }}
+                            tickLine={false}
+                            axisLine={false}
+                        />
+                        <ZAxis type="number" range={[40, 40]} />
+                        <Tooltip
+                            cursor={{ strokeDasharray: '3 3' }}
+                            content={({ active, payload }) => {
+                                if (!active || !payload?.length) return null;
+                                const p = payload[0].payload;
+                                return (
+                                    <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                                        <p className="mb-1.5 font-semibold text-zinc-700 dark:text-zinc-200">Día {p.dia}</p>
+                                        <p style={{ color: "#3b82f6" }}>Bloqueo: <span className="font-medium">{p.bloqueo}%</span></p>
+                                        <p style={{ color: "#f59e0b" }}>Espera Media: <span className="font-medium">{p.espera} min</span></p>
+                                    </div>
+                                );
+                            }}
+                        />
+                        <Scatter data={scatterData} fill="#8b5cf6" opacity={0.6} />
+                    </ScatterChart>
+                </ResponsiveContainer>
+            </ChartCard>
+
+            {/* ── Gráfico 5: Distribución de Horas de Cierre ─── */}
             <ChartCard
                 icon={Clock}
-                title="Top días con hora de cierre más tardía"
-                subtitle={`Los ${worstCierreData.length} días donde la jornada finalizó más tarde`}
+                title="Distribución de Horas de Cierre"
+                subtitle="Frecuencia de cierre agrupada en intervalos de 5 minutos (separando el cierre puntual)"
             >
-                <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={worstCierreData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={histCierreData} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid, #e4e4e7)" />
-                        <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} />
+                        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#71717a" }} tickLine={false} />
                         <YAxis
                             tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} axisLine={false}
-                            tickFormatter={v => minToHHMM(v)}
                         />
                         <Tooltip
+                            cursor={{ fill: "transparent" }}
                             content={({ active, payload, label }) => {
                                 if (!active || !payload?.length) return null;
                                 return (
                                     <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
                                         <p className="mb-1.5 font-semibold text-zinc-700 dark:text-zinc-200">{label}</p>
-                                        {payload.map(p => (
-                                            <p key={p.dataKey} style={{ color: p.color }}>
-                                                Cierre: <span className="font-medium">{minToHHMM(p.value)}</span>
-                                            </p>
-                                        ))}
+                                        <p style={{ color: "#06b6d4" }}>
+                                            Días: <span className="font-medium">{payload[0].value}</span>
+                                        </p>
                                     </div>
                                 );
                             }}
                         />
-                        <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
-                        <Bar dataKey="fin_jornada_min" name="Hora de cierre" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="frecuencia" name="Frecuencia (Días)" fill="#06b6d4" radius={[4, 4, 0, 0]} />
                     </BarChart>
                 </ResponsiveContainer>
             </ChartCard>
