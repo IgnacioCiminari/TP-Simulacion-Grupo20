@@ -55,7 +55,12 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
     "autos_atendidos": 21,
     "camionetas_atendidas": 15,
     "max_cola": 4,
-    "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 }
+    "promedio_espera_autos_min": 0.0407,
+    "promedio_espera_camionetas_min": 0.2317,
+    "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 },
+    "servicio_frenos_min": { "1": 25.4, "2": 30.1 },
+    "servicio_luces_min": { "1": 40.2, "2": 45.5 },
+    "total_servicio_min": { "1": 65.6, "2": 75.6 }
   },
   "pagination": { "offset": 0, "limit": 50, "total_records": 120 },
   "records": [ { "Iteracion": "1", "Dia": "1", "Evento": "Inicialización", "Reloj_min": "480.00", "..." } ],
@@ -124,7 +129,12 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
       "autos_atendidos": 21,
       "camionetas_atendidas": 15,
       "max_cola": 4,
-      "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 }
+      "promedio_espera_autos_min": 0.0407,
+      "promedio_espera_camionetas_min": 0.2317,
+      "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 },
+      "servicio_frenos_min": { "1": 25.4, "2": 30.1 },
+      "servicio_luces_min": { "1": 40.2, "2": 45.5 },
+      "total_servicio_min": { "1": 65.6, "2": 75.6 }
     }
   ]
 }

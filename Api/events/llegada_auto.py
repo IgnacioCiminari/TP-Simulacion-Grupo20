@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from core.event import Event
 from entities.vehicle import Vehicle, VehicleType
+import events._routing as routing
 
 if TYPE_CHECKING:
     from core.simulation import Simulation
@@ -26,8 +27,6 @@ class LlegadaAuto(Event):
         return "Llegada Auto"
 
     def process(self, sim: "Simulation") -> list[Event]:
-        from events._routing import _route_vehicle_to_frenos
-
         state = sim.state
         new_events: list[Event] = []
 
@@ -39,7 +38,7 @@ class LlegadaAuto(Event):
         )
 
         # Rutear: a Frenos libre o a la cola
-        new_events.extend(_route_vehicle_to_frenos(vehicle, sim))
+        new_events.extend(routing._route_vehicle_to_frenos(vehicle, sim))
 
         # Programar la próxima llegada de auto si las puertas están abiertas
         if state.puertas_abiertas:

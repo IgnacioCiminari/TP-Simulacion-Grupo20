@@ -159,8 +159,11 @@ def _build_day_response(dia: int, offset: int, limit: int) -> dict:
         )
 
     records = sim["rows_by_day"][dia]
-    paginated = records[offset: offset + limit]
+    paginated_tuples = records[offset: offset + limit]
     stats_dia = next((s for s in sim["stats_por_dia"] if s["dia"] == dia), None)
+
+    exporter = sim["exporter"]
+    paginated = [exporter.format_row(r) for r in paginated_tuples]
 
     return {
         "dia": dia,
@@ -237,7 +240,7 @@ def run_simulacion(
         **day_response,
         "total_dias_simulados": len(results),
         "estadisticas_globales": _build_global_stats(_simulacion_activa),
-        "ultimo_registro": _simulacion_activa["last_row"],
+        "ultimo_registro": sim.exporter.format_row(_simulacion_activa["last_row"]) if _simulacion_activa["last_row"] else None,
     }
 
 
@@ -272,7 +275,7 @@ def get_ultimo_registro() -> dict:
     last = sim.get("last_row")
     if last is None:
         raise HTTPException(status_code=404, detail="No hay registros disponibles.")
-    return {"ultimo_registro": last}
+    return {"ultimo_registro": sim["exporter"].format_row(last)}
 
 
 @app.get(

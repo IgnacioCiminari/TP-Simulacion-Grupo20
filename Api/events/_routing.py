@@ -27,8 +27,6 @@ def _route_vehicle_to_frenos(
 
     if free_line is not None:
         # El vehículo entra directamente a la estación de Frenos.
-        # Se pasa line_id para que sample_tiempo_frenos registre el RND
-        # en la columna correcta del vector de estado.
         tiempo_frenos = sim.sample_tiempo_frenos(free_line.id)
         fin = sim.state.clock + tiempo_frenos
 
@@ -37,10 +35,12 @@ def _route_vehicle_to_frenos(
         vehicle.estado = VehicleState.EN_FRENOS
 
         free_line.frenos.start_service(vehicle, sim.state.clock, fin)
+        sim.state.track_vehicle_enter(vehicle, linea=free_line.id)
 
         return [FinRevisionFrenos(timestamp=fin, line_id=free_line.id)]
     else:
         # Va a la cola de ingreso
         vehicle.estado = VehicleState.ESPERANDO
         sim.state.entry_queue.enqueue(vehicle)
+        sim.state.track_vehicle_enter(vehicle, linea=None)
         return []

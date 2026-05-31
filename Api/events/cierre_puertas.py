@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from core.event import Event
+import events.llegada_auto as eauto
+import events.llegada_camioneta as ecamioneta
 
 if TYPE_CHECKING:
     from core.simulation import Simulation
@@ -26,16 +28,13 @@ class CierrePuertas(Event):
         return "Cierre de Puertas"
 
     def process(self, sim: "Simulation") -> list[Event]:
-        from events.llegada_auto import LlegadaAuto
-        from events.llegada_camioneta import LlegadaCamioneta
-
         sim.state.puertas_abiertas = False
         sim.state.prox_llegada_auto = None
         sim.state.prox_llegada_camioneta = None
 
         # Eliminar de la FEL los eventos de llegada ya agendados pero aún no procesados.
-        sim.fel.remove_by_type(LlegadaAuto)
-        sim.fel.remove_by_type(LlegadaCamioneta)
+        sim.fel.remove_by_type(eauto.LlegadaAuto)
+        sim.fel.remove_by_type(ecamioneta.LlegadaCamioneta)
 
         # No genera eventos nuevos; la simulación sigue con los eventos ya agendados.
         return []
