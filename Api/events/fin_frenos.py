@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from core.event import Event
-from entities.vehicle import VehicleState
+from entities.vehicle import VehicleState, VehicleType
 from entities.station import StationStatus
+import events.fin_luces as eluces
 
 if TYPE_CHECKING:
     from core.simulation import Simulation
@@ -31,8 +32,6 @@ class FinRevisionFrenos(Event):
         return f"Fin Revisión Frenos L{self.line_id}"
 
     def process(self, sim: "Simulation") -> list[Event]:
-        from events.fin_luces import FinRevisionLuces
-
         state = sim.state
         new_events: list[Event] = []
 
@@ -52,14 +51,14 @@ class FinRevisionFrenos(Event):
 
         if luces.is_free():
             # --- Camino 1: Luces libre → transferir vehículo ---
-            # line_id se pasa para que el RND quede registrado en la columna correcta
             tiempo_luces = sim.sample_tiempo_luces(self.line_id)
             fin_luces = state.clock + tiempo_luces
 
             vehicle.estado = VehicleState.EN_LUCES
             luces.start_service(vehicle, state.clock, fin_luces)
+            state.track_vehicle_update(vehicle, linea=self.line_id)
 
-            new_events.append(FinRevisionLuces(timestamp=fin_luces, line_id=self.line_id))
+            new_events.append(eluces.FinRevisionLuces(timestamp=fin_luces, line_id=self.line_id))
 
             # Frenos queda libre → tomar siguiente de la cola
             new_events.extend(_dequeue_to_frenos(line, sim))
@@ -69,6 +68,7 @@ class FinRevisionFrenos(Event):
             vehicle.hora_inicio_bloqueo = state.clock
             frenos.current_vehicle = vehicle
             frenos.set_blocked(state.clock)
+            state.track_vehicle_update(vehicle, linea=self.line_id)
             # No se puede atender el siguiente de la cola hasta que Luces se libere
 
         return new_events
@@ -93,7 +93,7 @@ def _dequeue_to_frenos(line, sim: "Simulation") -> list[Event]:
     # Registrar el tiempo de espera en cola y marcar como ya contabilizado.
     # FinRevisionLuces salteará este vehículo al verificar _already_counted.
     wait_time = state.clock - next_vehicle.hora_inicio_espera
-    if next_vehicle.tipo.value == "Auto":
+    if next_vehicle.tipo == VehicleType.AUTO:
         state.total_espera_autos += wait_time
         state.count_autos_atendidos += 1
         sim.row_context["tiempo_espera_auto"] = wait_time
@@ -113,6 +113,6 @@ def _dequeue_to_frenos(line, sim: "Simulation") -> list[Event]:
     next_vehicle.estado = VehicleState.EN_FRENOS
 
     line.frenos.start_service(next_vehicle, state.clock, fin)
+    state.track_vehicle_update(next_vehicle, linea=line.id)
 
-    from events.fin_frenos import FinRevisionFrenos
     return [FinRevisionFrenos(timestamp=fin, line_id=line.id)]

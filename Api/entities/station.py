@@ -30,6 +30,7 @@ class Station:
         self.tipo = tipo
         self.line_id = line_id
         self.status: StationStatus = StationStatus.LIBRE
+        self.status_str: str = "Libre"   # caché: mirror de status.value sin enum lookup
         self.current_vehicle: Vehicle | None = None
         self.hora_fin_atencion: float | None = None
 
@@ -60,6 +61,7 @@ class Station:
         """Inicia la atención de un vehículo en esta estación."""
         self.current_vehicle = vehicle
         self.status = StationStatus.OCUPADO
+        self.status_str = "Ocupado"
         self.hora_fin_atencion = fin
         self._busy_start = clock
 
@@ -83,6 +85,7 @@ class Station:
         El vehículo permanece en la estación.
         """
         self.status = StationStatus.BLOQUEADO
+        self.status_str = "Bloqueado"
         self._block_start = clock
         # El tiempo de servicio en sí ya terminó; acumulamos lo que estuvimos ocupados
         if self._busy_start is not None:
@@ -101,6 +104,7 @@ class Station:
         vehicle = self.current_vehicle
         self.current_vehicle = None
         self.status = StationStatus.LIBRE
+        self.status_str = "Libre"
         self.hora_fin_atencion = None
         return vehicle
 
@@ -108,6 +112,7 @@ class Station:
         """Libera la estación sin vehículo (queda disponible para el siguiente)."""
         self.current_vehicle = None
         self.status = StationStatus.LIBRE
+        self.status_str = "Libre"
         self.hora_fin_atencion = None
         self._busy_start = None
 

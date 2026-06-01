@@ -12,6 +12,9 @@ from entities.line import InspectionLine
 from entities.station import Station, StationType
 from stats.exporter import MemoryExporter
 from stats.tracker import StatsTracker, GlobalStatsAccumulator
+import events.llegada_auto as eauto
+import events.llegada_camioneta as ecamioneta
+import events.cierre_puertas as ecierre
 
 if TYPE_CHECKING:
     pass
@@ -103,6 +106,8 @@ class Simulation:
 
         # Contexto de la fila actual: RNDs y tiempos generados durante el evento.
         self.row_context: dict[str, float | None] = {}
+        # Precalcular keys para reset_row_context() (se hacen UNA SOLA VEZ)
+        self._context_keys_precomputed = self._build_context_keys()
 
         # Tiempo real de ejecución (segundos, llenado en run())
         self.elapsed_seconds: float = 0.0
@@ -125,14 +130,30 @@ class Simulation:
     # Gestión del contexto de fila (para la memoria)
     # ------------------------------------------------------------------
 
-    def reset_row_context(self) -> None:
-        """Limpia el contexto de la fila actual. Llamar antes de procesar cada evento.
-        Genera las claves dinámicamente según el número de líneas configurado."""
-        ctx = {key: None for key in _CONTEXT_KEYS}
+    #def reset_row_context(self) -> None:
+    #    """Limpia el contexto de la fila actual. Llamar antes de procesar cada evento.
+    #    Genera las claves dinámicamente según el número de líneas configurado."""
+    #    ctx = {key: None for key in _CONTEXT_KEYS}
+    #    for i in range(1, self.config.num_lineas + 1):
+    #        for key_template in _CONTEXT_KEYS_PER_LINE:
+    #            ctx[key_template.replace("{i}", str(i))] = None
+    #    self.row_context = ctx
+
+    def _build_context_keys(self) -> list[str]:
+        """Construye la lista de claves del contexto, sustituyendo "{i}" una sola vez.
+        
+        Se llama una única vez en __init__, no en cada reset_row_context().
+        """
+        keys = list(_CONTEXT_KEYS)
         for i in range(1, self.config.num_lineas + 1):
             for key_template in _CONTEXT_KEYS_PER_LINE:
-                ctx[key_template.replace("{i}", str(i))] = None
-        self.row_context = ctx
+                key = key_template.replace("{i}", str(i))
+                keys.append(key)
+        return keys
+    
+    def reset_row_context(self) -> None:
+        for key in self._context_keys_precomputed:
+            self.row_context[key] = None
 
     # ------------------------------------------------------------------
     # Generadores de variables aleatorias
@@ -184,6 +205,9 @@ class Simulation:
         self, dia: int,
         offset_autos: int = 0,
         offset_camionetas: int = 0,
+        offset_espera_autos: float = 0.0,
+        offset_espera_camionetas: float = 0.0,
+        offset_bloqueo: dict[int, float] | None = None,
     ) -> tuple[StatsTracker, list[dict], int]:
         """
         Inicializa y ejecuta un único día de simulación.
@@ -192,15 +216,14 @@ class Simulation:
             dia: Número de jornada (1-indexed).
             offset_autos: Total global de autos atendidos en días anteriores.
             offset_camionetas: Total global de camionetas atendidas en días anteriores.
+            offset_espera_autos: Total global acumulado de esperas en autos.
+            offset_espera_camionetas: Total global acumulado de esperas en camionetas.
+            offset_bloqueo: Total global acumulado de bloqueos por línea.
 
         Returns:
             (tracker, rows, iteraciones) donde `iteraciones` es la cantidad de
             filas escritas en el vector de estado durante ese día.
         """
-        from events.llegada_auto import LlegadaAuto
-        from events.llegada_camioneta import LlegadaCamioneta
-        from events.cierre_puertas import CierrePuertas
-
         # ── Inicializar estado fresco para el día ──────────────────────────
         seed = self._derive_seed(self.config.master_seed, dia)
         self.rng = TrackedRandom(seed)
@@ -225,16 +248,23 @@ class Simulation:
 
         t_auto = self.sample_llegada_auto()
         self.state.prox_llegada_auto = t0 + t_auto
-        self.schedule(LlegadaAuto(timestamp=self.state.prox_llegada_auto))
+        self.schedule(eauto.LlegadaAuto(timestamp=self.state.prox_llegada_auto))
 
         t_cam = self.sample_llegada_camioneta()
         self.state.prox_llegada_camioneta = t0 + t_cam
-        self.schedule(LlegadaCamioneta(timestamp=self.state.prox_llegada_camioneta))
+        self.schedule(ecamioneta.LlegadaCamioneta(timestamp=self.state.prox_llegada_camioneta))
 
-        self.schedule(CierrePuertas(timestamp=self.config.hora_cierre_puertas))
+        self.schedule(ecierre.CierrePuertas(timestamp=self.config.hora_cierre_puertas))
 
         # ── Preparar exporter para este día ───────────────────────────────
-        self.exporter.start_day(dia, offset_autos=offset_autos, offset_camionetas=offset_camionetas)
+        self.exporter.start_day(
+            dia,
+            offset_autos=offset_autos,
+            offset_camionetas=offset_camionetas,
+            offset_espera_autos=offset_espera_autos,
+            offset_espera_camionetas=offset_espera_camionetas,
+            offset_bloqueo=offset_bloqueo
+        )
 
         self.exporter.write_row(
             "Inicialización", self.state, self.tracker, self.config, self.fel,
@@ -265,10 +295,18 @@ class Simulation:
         iteraciones = len(rows)
         return self.tracker, rows, iteraciones
 
-    def run(self) -> tuple[list[DayResult], GlobalStatsAccumulator]:
+    def run(
+        self,
+        on_day_complete=None,
+    ) -> tuple[list[DayResult], GlobalStatsAccumulator]:
         """
         Ejecuta la simulación completa (múltiples días) respetando las condiciones
         de corte configuradas.
+
+        Args:
+            on_day_complete: Callable opcional ``(dia, total_iteraciones) -> None``
+                que se invoca al finalizar cada día. Útil para reportar progreso
+                a un endpoint externo sin bloquear la simulación.
 
         Returns:
             Tupla (results, global_stats):
@@ -286,6 +324,9 @@ class Simulation:
         # Offsets globales que se pasan a cada día para calcular Acum_Global_*
         offset_autos = 0
         offset_camionetas = 0
+        offset_espera_autos = 0.0
+        offset_espera_camionetas = 0.0
+        offset_bloqueo = {i: 0.0 for i in range(1, self.config.num_lineas + 1)}
 
         t_start = time.perf_counter()
 
@@ -294,14 +335,25 @@ class Simulation:
                 dia,
                 offset_autos=offset_autos,
                 offset_camionetas=offset_camionetas,
+                offset_espera_autos=offset_espera_autos,
+                offset_espera_camionetas=offset_espera_camionetas,
+                offset_bloqueo=offset_bloqueo,
             )
             total_iteraciones += iteraciones_dia
             results.append(DayResult(dia=dia, tracker=tracker, rows=rows))
             global_stats.add_day(tracker)
 
+            # Notificar progreso al finalizar el día
+            if on_day_complete is not None:
+                on_day_complete(dia, total_iteraciones)
+
             # Actualizar offsets para el siguiente día
             offset_autos += tracker.autos_atendidos
             offset_camionetas += tracker.camionetas_atendidas
+            offset_espera_autos += tracker._total_espera_autos
+            offset_espera_camionetas += tracker._total_espera_camionetas
+            for i in range(1, self.config.num_lineas + 1):
+                offset_bloqueo[i] += tracker.acum_bloqueo_frenos.get(i, 0.0)
 
             # Evaluar condiciones de corte (se corta si se cumple CUALQUIERA)
             limite_dias = dia >= self.config.max_dias

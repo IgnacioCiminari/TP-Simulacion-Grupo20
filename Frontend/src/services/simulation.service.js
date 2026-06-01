@@ -2,13 +2,30 @@ import { api } from "./api";
 
 /**
  * POST /simulacion
- * Ejecuta una nueva simulación. Acepta params de configuración y paginación inicial.
- * Devuelve estadísticas globales, registros del día 1 y último registro.
+ * Lanza una nueva simulación en background.
+ * Retorna { status: "started" } inmediatamente.
  */
-const runSimulation = async (config = {}, offset = 0, limit = 50) => {
-    const response = await api.post("/simulacion", config, {
-        params: { offset, limit },
-    });
+const runSimulation = async (config = {}) => {
+    const response = await api.post("/simulacion", config);
+    return response.data;
+};
+
+/**
+ * GET /simulacion/progreso
+ * Devuelve el progreso actual de la simulación en curso.
+ */
+const getProgreso = async () => {
+    const response = await api.get("/simulacion/progreso");
+    return response.data;
+};
+
+/**
+ * GET /estadisticas/top_bloqueo?n=N
+ * Devuelve los top N días con mayor % de bloqueo de frenos.
+ * Evita transferir el dataset completo para el gráfico de impacto.
+ */
+const getTopBloqueo = async (n = 10) => {
+    const response = await api.get("/estadisticas/top_bloqueo", { params: { n } });
     return response.data;
 };
 
@@ -51,12 +68,12 @@ const getGlobalStats = async () => {
 };
 
 /**
- * GET /simulacion/exportar
- * Descarga el CSV del vector de estado completo.
+ * POST /simulacion/exportar
+ * Genera y guarda el CSV del vector de estado completo en el servidor.
  */
-const downloadCsv = () => {
-    // Abrir en nueva ventana/pestaña para que el browser dispare la descarga
-    window.open(`${api.defaults.baseURL}/simulacion/exportar`, "_blank");
+const downloadCsv = async () => {
+    const response = await api.post("/simulacion/exportar");
+    return response.data;
 };
 
 /**
@@ -70,6 +87,8 @@ const healthCheck = async () => {
 
 export default {
     runSimulation,
+    getProgreso,
+    getTopBloqueo,
     getDayRecords,
     getUltimoRegistro,
     getAllStats,
@@ -77,3 +96,4 @@ export default {
     downloadCsv,
     healthCheck,
 };
+

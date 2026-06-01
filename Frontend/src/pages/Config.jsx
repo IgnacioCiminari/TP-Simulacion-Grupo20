@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
 import { toast } from "sonner";
-import { Loader2, Play } from "lucide-react";
+import { Loader2, Play, CalendarDays, Zap, CheckCircle2 } from "lucide-react";
 import { useSimulation } from "../context/SimulationContext";
 import simulationService from "../services/simulation.service";
+import { Progress } from "../components/ui/Progress";
 
 const DEFAULT_VALUES = {
     hora_apertura: 480.0,
@@ -16,8 +17,8 @@ const DEFAULT_VALUES = {
     luces_min: 6.0,
     luces_max: 10.0,
     num_lineas: 2,
-    max_dias: 10,
-    max_iteraciones: 1000,
+    max_dias: 1000,
+    max_iteraciones: 100000,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +158,81 @@ function FormField({ label, name, register, errors, type = "number", step, hint 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Componente: Panel de progreso (barras animadas)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ProgressPanel({ progreso }) {
+    const { status, dias_completados, max_dias, iteraciones_completadas, max_iteraciones } = progreso;
+
+    const pctDias = max_dias > 0 ? Math.round((dias_completados / max_dias) * 100) : 0;
+    const pctIter = max_iteraciones > 0 ? Math.round((iteraciones_completadas / max_iteraciones) * 100) : 0;
+
+    const isDone = status === "done";
+    const isError = status === "error";
+
+    return (
+        <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900 space-y-5">
+            <div className="flex items-center gap-2">
+                {isDone ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                ) : isError ? (
+                    <span className="h-4 w-4 rounded-full bg-red-500 inline-block shrink-0" />
+                ) : (
+                    <Loader2 className="h-4 w-4 animate-spin text-zinc-500 shrink-0" />
+                )}
+                <h2 className="text-sm font-semibold uppercase tracking-widest text-zinc-500 dark:text-zinc-400">
+                    {isDone
+                        ? "Simulación Completada"
+                        : isError
+                        ? "Error en la Simulación"
+                        : "Ejecutando Simulación…"}
+                </h2>
+            </div>
+
+            {isError && (
+                <p className="text-xs text-red-500">{progreso.error_detail ?? "Error desconocido."}</p>
+            )}
+
+            {/* Barra de Días */}
+            <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-sm text-zinc-700 dark:text-zinc-300">
+                        <CalendarDays className="h-3.5 w-3.5 text-zinc-400" />
+                        <span className="font-medium">Días simulados</span>
+                    </div>
+                    <span className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400">
+                        {dias_completados} / {max_dias}
+                    </span>
+                </div>
+                <Progress
+                    value={pctDias}
+                    indicatorClassName={isDone ? "bg-emerald-500" : undefined}
+                />
+                <p className="text-right text-xs text-zinc-400">{pctDias}%</p>
+            </div>
+
+            {/* Barra de Iteraciones */}
+            <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-sm text-zinc-700 dark:text-zinc-300">
+                        <Zap className="h-3.5 w-3.5 text-zinc-400" />
+                        <span className="font-medium">Iteraciones acumuladas</span>
+                    </div>
+                    <span className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400">
+                        {iteraciones_completadas.toLocaleString()} / {max_iteraciones.toLocaleString()}
+                    </span>
+                </div>
+                <Progress
+                    value={pctIter}
+                    indicatorClassName={isDone ? "bg-emerald-500" : undefined}
+                />
+                <p className="text-right text-xs text-zinc-400">{pctIter}%</p>
+            </div>
+        </section>
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Página principal: Config
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -164,6 +240,16 @@ export default function Config() {
     const navigate = useNavigate();
     const { setSimulationResult, setTotalDias, setGlobalStats, setLastRow } = useSimulation();
     const [loading, setLoading] = useState(false);
+    const [progreso, setProgreso] = useState(null); // null = no hay simulación en curso
+
+    const intervalRef = useRef(null);
+
+    // Limpiar el intervalo al desmontar
+    useEffect(() => {
+        return () => {
+            if (intervalRef.current) clearInterval(intervalRef.current);
+        };
+    }, []);
 
     const {
         register,
@@ -172,29 +258,85 @@ export default function Config() {
         formState: { errors },
     } = useForm({ defaultValues: DEFAULT_VALUES });
 
+    const stopPolling = () => {
+        if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+        }
+    };
+
     const onSubmit = async (data) => {
         setLoading(true);
+        stopPolling();
+
+        // Estado de progreso inicial (optimista mientras el POST responde)
+        setProgreso({
+            status: "running",
+            dias_completados: 0,
+            max_dias: data.max_dias,
+            iteraciones_completadas: 0,
+            max_iteraciones: data.max_iteraciones,
+            error_detail: null,
+        });
+
         // Excluir la seed (siempre fija internamente en el backend)
         const { master_seed: _removed, ...payload } = data;
-        try {
-            const result = await simulationService.runSimulation(payload);
-            // Guardar datos del día 1 en el contexto (para la Tabla)
-            setSimulationResult(result);
-            // Guardar cantidad real de días simulados
-            setTotalDias(result.total_dias_simulados);
-            // Guardar estadísticas globales (para la página Estadísticas)
-            setGlobalStats(result.estadisticas_globales);
-            // Guardar último registro (para sticky row de la Tabla)
-            setLastRow(result.ultimo_registro);
 
-            toast.success("¡Simulación concretada con éxito!", {
-                description: `${result.estadisticas_globales?.total_dias ?? ""} días simulados en ${result.estadisticas_globales?.tiempo_ejecucion ?? ""}`,
-            });
-            navigate("/stats");
+        try {
+            // Lanzar simulación — retorna { status: "started" } inmediatamente
+            await simulationService.runSimulation(payload);
+
+            // Iniciar polling cada 1.5 s
+            intervalRef.current = setInterval(async () => {
+                try {
+                    const p = await simulationService.getProgreso();
+                    setProgreso(p);
+
+                    if (p.status === "done") {
+                        stopPolling();
+
+                        // Obtener estadísticas globales y guardar en contexto
+                        const globalStats = await simulationService.getGlobalStats();
+                        setGlobalStats(globalStats);
+
+                        // Obtener datos del día 1 para la tabla
+                        const dayData = await simulationService.getDayRecords(1, 0, 50);
+                        setSimulationResult(dayData);
+
+                        // Obtener total de días reales simulados
+                        const allStats = await simulationService.getAllStats();
+                        setTotalDias(allStats.total_dias);
+
+                        // Obtener último registro (opcional)
+                        try {
+                            const ul = await simulationService.getUltimoRegistro();
+                            setLastRow(ul.ultimo_registro);
+                        } catch (_) { /* no crítico */ }
+
+                        toast.success("¡Simulación concretada con éxito!", {
+                            description: `${globalStats.total_dias ?? ""} días simulados en ${globalStats.tiempo_ejecucion ?? ""}`,
+                        });
+
+                        setLoading(false);
+                        navigate("/stats");
+
+                    } else if (p.status === "error") {
+                        stopPolling();
+                        toast.error("Error en la simulación", {
+                            description: p.error_detail ?? "Error inesperado.",
+                        });
+                        setLoading(false);
+                    }
+                } catch (pollErr) {
+                    console.error("Error en polling:", pollErr);
+                }
+            }, 1500);
+
         } catch (err) {
-            const detail = err?.response?.data?.detail || "Error inesperado al ejecutar la simulación.";
+            stopPolling();
+            setProgreso(null);
+            const detail = err?.response?.data?.detail || "Error inesperado al iniciar la simulación.";
             toast.error("Error en la simulación", { description: detail });
-        } finally {
             setLoading(false);
         }
     };
@@ -298,6 +440,9 @@ export default function Config() {
                         />
                     </div>
                 </section>
+
+                {/* === PANEL DE PROGRESO === */}
+                {progreso && <ProgressPanel progreso={progreso} />}
 
                 {/* === BOTÓN SUBMIT === */}
                 <div className="flex justify-end">

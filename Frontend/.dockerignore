@@ -1,0 +1,16 @@
+# Dependencias locales — se reinstalan dentro del contenedor
+node_modules
+dist
+
+# El workspace file confunde a pnpm dentro del contenedor (no es un monorepo)
+pnpm-workspace.yaml
+
+# Archivos de desarrollo/entorno
+.env
+.env.*
+*.local
+
+# Cache y logs
+.cache
+npm-debug.log*
+pnpm-debug.log*

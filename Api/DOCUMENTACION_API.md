@@ -1,9 +1,21 @@
-# Documentación de la API de Simulación RTV — v3.0
+# Documentación de la API de Simulación RTV — v4.0
 
 La API está construida con **FastAPI**. Por defecto corre en `http://127.0.0.1:8000`.
 Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:8000/docs`.
 
 > **Nota**: La semilla de aleatoriedad (`master_seed`) es gestionada internamente por la API y **no se expone al usuario**.
+
+---
+
+## Flujo general
+
+```
+POST /simulacion          → { status: "started" }  (respuesta inmediata)
+GET  /simulacion/progreso → polling hasta { status: "done" }
+GET  /estadisticas_globales → estadísticas totales de la simulación
+GET  /simulacion          → registros paginados de un día
+GET  /estadisticas/top_bloqueo?n=10 → top N días para el gráfico de bloqueo
+```
 
 ---
 
@@ -18,10 +30,10 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
 
 ---
 
-## 2. Ejecutar Simulación
+## 2. Lanzar Simulación (Asincrónico)
 
 - **URL:** `POST /simulacion`
-- **Descripción:** Crea y ejecuta una simulación multi-día. Reemplaza cualquier simulación anterior en memoria. **No escribe archivos a disco** — todo se guarda en RAM.
+- **Descripción:** Lanza la simulación en un thread de fondo y retorna **inmediatamente**. La simulación corre en paralelo; consultá el progreso en `GET /simulacion/progreso`.
 
 **Condiciones de corte** (se detiene cuando se cumple *cualquiera*):
 - `max_dias` días completados.
@@ -46,38 +58,40 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
 
 **Respuesta Exitosa (200 OK):**
 ```json
-{
-  "dia": 1,
-  "stats": {
-    "dia": 1,
-    "fin_jornada_min": 960.0,
-    "fin_jornada_hhmm": "16:00",
-    "autos_atendidos": 21,
-    "camionetas_atendidas": 15,
-    "max_cola": 4,
-    "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 }
-  },
-  "pagination": { "offset": 0, "limit": 50, "total_records": 120 },
-  "records": [ { "Iteracion": "1", "Dia": "1", "Evento": "Inicialización", "Reloj_min": "480.00", "..." } ],
-  "total_dias_simulados": 10,
-  "estadisticas_globales": {
-    "total_dias": 10,
-    "total_autos_atendidos": 230,
-    "total_camionetas_atendidas": 145,
-    "promedio_espera_autos_min": 0.0812,
-    "promedio_espera_camionetas_min": 0.3471,
-    "promedio_fin_jornada_min": 962.43,
-    "promedio_fin_jornada_hhmm": "16:02",
-    "porcentaje_bloqueo_global": { "1": 2.8412, "2": 0.9231 },
-    "tiempo_ejecucion": "0.43 s"
-  },
-  "ultimo_registro": { "Iteracion": "1205", "Dia": "10", "Evento": "Fin Atencion Luces", "..." }
-}
+{ "status": "started" }
 ```
 
 ---
 
-## 3. Consultar Registros de un Día
+## 3. Progreso de la Simulación
+
+- **URL:** `GET /simulacion/progreso`
+- **Descripción:** Devuelve el estado de avance de la simulación en curso (o de la última ejecutada). Diseñado para polling periódico (cada 1–2 s) desde el frontend.
+
+**Respuesta:**
+```json
+{
+  "status": "running",
+  "dias_completados": 4,
+  "max_dias": 10,
+  "iteraciones_completadas": 487,
+  "max_iteraciones": 1000,
+  "error_detail": null
+}
+```
+
+**Valores de `status`:**
+
+| Valor | Descripción |
+|-------|-------------|
+| `idle` | No se ejecutó ninguna simulación aún. |
+| `running` | Simulación en progreso. |
+| `done` | Finalizada correctamente. Los demás endpoints están disponibles. |
+| `error` | Falló. El detalle del error está en `error_detail`. |
+
+---
+
+## 4. Consultar Registros de un Día
 
 - **URL:** `GET /simulacion`
 - **Query Params:**
@@ -85,11 +99,19 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
   - `offset` (int, default: 0): Registro inicial de la página.
   - `limit` (int, default: 50): Tamaño de página.
 
-**Respuesta Exitosa (200 OK):** Igual a la respuesta del `POST` (sin `estadisticas_globales` ni `ultimo_registro`).
+**Respuesta Exitosa (200 OK):**
+```json
+{
+  "dia": 1,
+  "stats": { "dia": 1, "fin_jornada_min": 960.0, "..." },
+  "pagination": { "offset": 0, "limit": 50, "total_records": 120 },
+  "records": [ { "Iteracion": "1", "Dia": "1", "Evento": "Inicialización", "..." } ]
+}
+```
 
 ---
 
-## 4. Último Registro de la Simulación
+## 5. Último Registro de la Simulación
 
 - **URL:** `GET /simulacion/ultimo_registro`
 - **Descripción:** Devuelve el último evento registrado en toda la simulación (útil para la fila sticky de la tabla del front).
@@ -100,18 +122,27 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
 
 ---
 
-## 5. Exportar CSV
+## 6. Exportar CSV
 
-- **URL:** `GET /simulacion/exportar`
-- **Descripción:** Genera y descarga el CSV completo del vector de estado desde la memoria RAM. Incluye todas las columnas (incluyendo `Iteracion`) para todas las jornadas simuladas.
-- **Respuesta:** `text/csv` con `Content-Disposition: attachment; filename=vector_de_estado.csv`. Codificado en UTF-8 con BOM para compatibilidad con Excel.
+- **URL:** `POST /simulacion/exportar`
+- **Descripción:** Genera el CSV completo del vector de estado (todos los días) y lo guarda directamente en el servidor en la ruta `output/vector_de_estado.csv`. La carpeta `output/` se crea automáticamente si no existe. No inicia ninguna descarga en el navegador.
+- **Respuesta Exitosa (200 OK):**
+
+```json
+{
+  "status": "success",
+  "message": "CSV guardado exitosamente en output/vector_de_estado.csv"
+}
+```
+
+> **Docker:** El directorio `output/` del contenedor está montado como volumen (`./Api/output:/app/output`), por lo que el archivo queda accesible directamente desde el host en `Api/output/vector_de_estado.csv`.
 
 ---
 
-## 6. Estadísticas por Día (para Gráficos)
+## 7. Estadísticas por Día (dataset completo)
 
 - **URL:** `GET /estadisticas`
-- **Descripción:** Array con las estadísticas de cada jornada. Incluye `max_cola` (longitud máxima de cola del día) y `porcentaje_bloqueo_frenos` dinámico por línea.
+- **Descripción:** Array con las estadísticas de **todas** las jornadas simuladas. Incluye `max_cola`, `porcentaje_bloqueo_frenos` dinámico por línea, tiempos de servicio, etc. Usado para los gráficos de productividad e histograma de cierre.
 
 ```json
 {
@@ -124,7 +155,12 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
       "autos_atendidos": 21,
       "camionetas_atendidas": 15,
       "max_cola": 4,
-      "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 }
+      "promedio_espera_autos_min": 0.0407,
+      "promedio_espera_camionetas_min": 0.2317,
+      "porcentaje_bloqueo_frenos": { "1": 3.2059, "2": 0.0884 },
+      "servicio_frenos_min": { "1": 25.4, "2": 30.1 },
+      "servicio_luces_min": { "1": 40.2, "2": 45.5 },
+      "total_servicio_min": { "1": 65.6, "2": 75.6 }
     }
   ]
 }
@@ -132,10 +168,30 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
 
 ---
 
-## 7. Estadísticas Globales
+## 8. Top N Días por Bloqueo de Frenos
+
+- **URL:** `GET /estadisticas/top_bloqueo`
+- **Query Params:**
+  - `n` (int, default: 10, min: 1, max: 100): Cantidad de días a devolver.
+- **Descripción:** Devuelve los **N días con mayor suma de porcentaje de bloqueo de frenos** entre todas las líneas, ordenados de mayor a menor. Permite al frontend traer solo los datos necesarios para el gráfico de impacto sin transferir el dataset completo.
+
+```json
+{
+  "total_dias": 100,
+  "n": 10,
+  "estadisticas": [
+    { "dia": 7, "porcentaje_bloqueo_frenos": { "1": 8.4, "2": 3.1 }, "..." },
+    { "dia": 23, "..." }
+  ]
+}
+```
+
+---
+
+## 9. Estadísticas Globales
 
 - **URL:** `GET /estadisticas_globales`
-- **Descripción:** Estadísticas agregadas de toda la simulación activa, sin necesidad de re-ejecutar. Disponible inmediatamente tras ejecutar un `POST /simulacion`.
+- **Descripción:** Estadísticas agregadas de toda la simulación activa, sin necesidad de re-ejecutar. Disponible cuando `GET /simulacion/progreso` devuelve `status: "done"`.
 
 ```json
 {
@@ -157,6 +213,22 @@ Podés acceder a la documentación interactiva (Swagger) en `http://127.0.0.1:80
 
 | Código | Descripción |
 |--------|-------------|
-| `404`  | No hay simulación activa. Ejecutar primero `POST /simulacion`. |
+| `404`  | No hay simulación activa. Ejecutar primero `POST /simulacion` y esperar `status: "done"`. |
 | `404`  | El día solicitado no existe. Ver `detail` para los días disponibles. |
 | `500`  | Error interno del servidor. Ver logs del servidor. |
+
+---
+
+## Tabla de Endpoints
+
+| Método | URL | Descripción |
+|--------|-----|-------------|
+| `GET`  | `/` | Health check |
+| `POST` | `/simulacion` | Lanza simulación en background |
+| `GET`  | `/simulacion/progreso` | Estado de avance (polling) |
+| `GET`  | `/simulacion` | Registros paginados de un día |
+| `GET`  | `/simulacion/ultimo_registro` | Último evento registrado |
+| `POST` | `/simulacion/exportar` | Guarda CSV en `output/vector_de_estado.csv` |
+| `GET`  | `/estadisticas` | Estadísticas de todos los días |
+| `GET`  | `/estadisticas/top_bloqueo` | Top N días por bloqueo |
+| `GET`  | `/estadisticas_globales` | Estadísticas globales agregadas |

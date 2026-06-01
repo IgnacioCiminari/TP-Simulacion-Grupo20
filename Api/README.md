@@ -48,14 +48,11 @@ tp4_simulacion/
 │
 ├── stats/                     # Estadísticas y exportación
 │   ├── tracker.py             # StatsTracker: promedios, porcentajes, hora de cierre
-│   └── exporter.py            # CsvExporter: genera el vector de estado en CSV (multi-día)
+│   └── exporter.py            # MemoryExporter: genera el vector de estado en CSV en memoria
 │
-├── tests/                     # Suite de tests (pytest)
-│   ├── test_queue.py          # Tests unitarios de la cola con prioridad
-│   └── test_events.py         # Tests de bloqueo, desbloqueo y simulación completa
-│
-└── output/                    # Generado automáticamente al correr la simulación
-    └── vector_de_estado.csv   # Traza completa del vector de estado (todos los días)
+└── tests/                     # Suite de tests (pytest)
+    ├── test_queue.py          # Tests unitarios de la cola con prioridad
+    └── test_events.py         # Tests de bloqueo, desbloqueo y simulación completa
 ```
 
 ---
@@ -80,24 +77,34 @@ uv sync
 
 ### 3. Correr la API de Simulación (FastAPI)
 
-Para interactuar con la simulación vía API REST y consultar los resultados paginados en formato JSON:
+La forma recomendada es usar Docker Compose (ver README raíz del proyecto). Para desarrollo local sin Docker:
 
 ```powershell
-uv run python -m uvicorn api:app --reload
+uv run uvicorn api:app --reload
 ```
 
 La API estará disponible en `http://127.0.0.1:8000`. Podés ver la documentación interactiva (Swagger) en `http://127.0.0.1:8000/docs`.
 
 ### 4. Endpoints de la API
 
-- **`POST /simulacion`**: Ejecuta una nueva simulación multi-día (reemplaza la anterior) y devuelve las estadísticas y registros del **Día 1**.
-  - Query Params: `offset` (default: 0), `limit` (default: 50).
-  - Body (opcional): JSON con los parámetros de la simulación (ver tabla más abajo).
-- **`GET /simulacion`**: Consulta los registros paginados de un día específico de la simulación activa.
-  - Query Params: `dia` (default: 1), `offset` (default: 0), `limit` (default: 50).
-- **`GET /estadisticas`**: Devuelve el array de estadísticas independientes de cada jornada simulada (hora de finalización, promedios de espera, porcentajes de bloqueo). Ideal para alimentar gráficos.
+| Método | URL | Descripción |
+|--------|-----|-------------|
+| `GET`  | `/` | Health check |
+| `POST` | `/simulacion` | Lanza la simulación en background — retorna `{ status: "started" }` inmediatamente |
+| `GET`  | `/simulacion/progreso` | Estado de avance: `dias_completados`, `iteraciones_completadas`, `status` |
+| `GET`  | `/simulacion` | Registros paginados de un día (`?dia=N&offset=0&limit=50`) |
+| `GET`  | `/simulacion/ultimo_registro` | Último evento registrado (sticky row de la tabla) |
+| `POST` | `/simulacion/exportar` | Guarda el CSV completo en `output/vector_de_estado.csv` en el servidor |
+| `GET`  | `/estadisticas` | Estadísticas de todas las jornadas (dataset completo para gráficos) |
+| `GET`  | `/estadisticas/top_bloqueo` | Top N días con mayor bloqueo de frenos (`?n=10`) |
+| `GET`  | `/estadisticas_globales` | Estadísticas globales agregadas de toda la simulación |
 
-> **Nota:** La simulación también genera el archivo físico `.csv` completo en `output/vector_de_estado.csv` tras cada ejecución, con todos los días trazados en una única tabla (columna `Dia` identifica cada jornada).
+> **Flujo típico del frontend:**
+> 1. `POST /simulacion` → `{ status: "started" }`
+> 2. Polling a `GET /simulacion/progreso` cada 1.5 s hasta `status: "done"`
+> 3. `GET /estadisticas_globales` para los KPIs principales
+> 4. `GET /simulacion?dia=1` para la tabla; `GET /estadisticas/top_bloqueo?n=10` para el gráfico de bloqueo
+> 5. `POST /simulacion/exportar` para guardar el CSV en disco (sin descarga en el navegador)
 
 ### 5. Correr por Consola (Script Original)
 
@@ -107,7 +114,7 @@ Si querés correr una simulación aislada desde la consola sin levantar el servi
 uv run python main.py
 ```
 
-Esto genera el archivo `output/vector_de_estado.csv` y muestra el reporte de cada día en la terminal.
+Esto ejecuta la simulación en memoria y muestra el reporte de cada día y las estadísticas globales en la terminal.
 
 ### 6. Correr los tests
 
@@ -130,7 +137,6 @@ Todos los parámetros se pueden configurar en `main.py` (objeto `SimulationConfi
 | `frenos_min / frenos_max` | Rango de la revisión de Frenos (min, Uniforme)                            | `4 – 7`     |
 | `luces_min / luces_max` | Rango de la revisión de Luces y Emisiones (min, Uniforme)                   | `6 – 10`    |
 | `num_lineas`            | Cantidad de líneas de inspección                                             | `2`         |
-| `csv_output_path`       | Ruta de salida del CSV                                                      | `output/vector_de_estado.csv` |
 | `master_seed`           | Semilla maestra para reproducibilidad (`None` = aleatorio)                  | `42`        |
 | `max_dias`              | Cantidad máxima de días a simular                                           | `10`        |
 | `max_iteraciones`       | Umbral de iteraciones totales acumuladas (se corta al superarlo)            | `1000`      |
@@ -179,12 +185,19 @@ Iniciando simulación (seed maestra=42, max_dias=10, max_iteraciones=1000)...
   ...
 
 Total de días simulados: 8
-Vector de estado guardado en: output/vector_de_estado.csv
+Tiempo de ejecución: 0.43 s
+
+ESTADÍSTICAS GLOBALES:
+  Total autos atendidos:       230
+  Total camionetas atendidas:  145
+  Promedio espera autos:       0.0812 min
+  Promedio espera camionetas:  0.3471 min
+  Promedio fin de jornada:     16:02
 ```
 
-### CSV (`output/vector_de_estado.csv`)
+### CSV Exportado
 
-El CSV contiene todos los días en una única tabla. La primera columna `Dia` identifica la jornada de cada fila. Cada fila corresponde a una transición de estado (procesamiento de un evento):
+El archivo CSV exportado (vía API) contiene todos los días en una única tabla. La primera columna `Dia` identifica la jornada de cada fila. Cada fila corresponde a una transición de estado (procesamiento de un evento):
 
 | Columna | Descripción |
 | :--- | :--- |
@@ -217,11 +230,13 @@ El CSV contiene todos los días en una única tabla. La primera columna `Dia` id
 | `Cant_Autos_Atendidos` | Cantidad total de autos que finalizaron la revisión técnica |
 | `Cant_Camionetas_Atendidas` | Cantidad total de camionetas que finalizaron la revisión técnica |
 | `Tiempo_Espera_Auto` | Tiempo de espera en cola del auto atendido en el evento actual (si aplica) |
-| `Acum_Espera_Autos` | Suma acumulada de los tiempos de espera en cola de autos (minutos) |
+| `Acum_Espera_Autos` | Suma acumulada de los tiempos de espera en cola de autos (minutos) en la jornada actual |
+| `Acum_Global_Espera_Autos` | Suma acumulada de los tiempos de espera en cola de autos (minutos) en toda la simulación |
 | `Tiempo_Espera_Camioneta` | Tiempo de espera en cola de la camioneta atendida en el evento actual (si aplica) |
-| `Acum_Espera_Camionetas` | Suma acumulada de los tiempos de espera en cola de camionetas (minutos) |
+| `Acum_Espera_Camionetas` | Suma acumulada de los tiempos de espera en cola de camionetas (minutos) en la jornada actual |
+| `Acum_Global_Espera_Camionetas` | Suma acumulada de los tiempos de espera en cola de camionetas (minutos) en toda la simulación |
 | `Tiempo_Bloqueo_L{i}` | Tiempo de bloqueo de la estación de Frenos de la línea $i$ liberado en el evento actual |
-| `Acum_Bloqueo_Frenos_L{i}` | Tiempo acumulado en que la estación de Frenos de la línea $i$ estuvo bloqueada |
+| `Acum_Global_Bloqueo_Frenos_L{i}` | Tiempo acumulado en que la estación de Frenos de la línea $i$ estuvo bloqueada globalmente |
 | **Estado del Sistema** | |
 | `Clientes_Activos` | Snapshot de vehículos activos. En el CSV se persiste como JSON array string; la API lo devuelve como array de objetos JSON. Cada objeto tiene los campos: `id`, `tipo`, `estado`, `linea`, `hora_llegada`, `hora_inicio_bloqueo`. |
 
@@ -236,4 +251,4 @@ La simulación implementa el patrón **Discrete Event Simulation (DES)** orienta
 3. **`SimulationState`** es el vector de estado mutable. Los eventos lo consultan y modifican a través de `sim.state`. Se reinicia al comienzo de cada nuevo día.
 4. **`EventQueue` (FEL)** es un heap de mínimos. Los eventos se despachan siempre en orden cronológico.
 5. **`StatsTracker`** acumula métricas de un único día. Al cierre de cada jornada llama a `cache_final_stats()` para persistir los promedios antes de que el estado se reinicie.
-6. **`CsvExporter`** escribe todas las jornadas en un único CSV usando la columna `Dia`. En memoria, indexa los registros por día (`rows_by_day`) para que la API pueda acceder a cada jornada en O(1).
+6. **`MemoryExporter`** genera la estructura de datos del CSV directamente en memoria. Indexa los registros por día para que la API pueda acceder a cada jornada en O(1) y genera el archivo completo al vuelo cuando se llama a exportar.

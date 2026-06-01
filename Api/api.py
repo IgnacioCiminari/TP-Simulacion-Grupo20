@@ -2,13 +2,14 @@
 API HTTP de la Simulación de la Planta de Revisión Técnica Vehicular.
 
 Endpoints:
-  POST /simulacion              — Ejecuta una nueva simulación (descarta la anterior).
-                                  Devuelve estadísticas globales + día 1 paginado.
-  GET  /simulacion              — Recupera registros paginados de un día específico.
+  POST /simulacion                 — Lanza una nueva simulación en background.
+                                     Retorna {status: "started"} de inmediato.
+  GET  /simulacion/progreso        — Devuelve el estado de avance de la simulación.
+  GET  /simulacion                 — Recupera registros paginados de un día específico.
   GET  /simulacion/ultimo_registro — Devuelve el último registro generado en toda la simulación.
-  GET  /simulacion/exportar     — Descarga el vector de estado completo como CSV.
-  GET  /estadisticas            — Devuelve las estadísticas de cada día simulado.
-  GET  /estadisticas_globales   — Devuelve las estadísticas globales de la simulación activa.
+  POST /simulacion/exportar        — Guarda el vector de estado completo como CSV en output/.
+  GET  /estadisticas               — Devuelve las estadísticas de cada día simulado.
+  GET  /estadisticas_globales      — Devuelve las estadísticas globales de la simulación activa.
 
 Paginación en GET /simulacion (query params): offset (default 0), limit (default 50).
 El parámetro `dia` selecciona la jornada a consultar (default 1).
@@ -19,6 +20,7 @@ Uso:
 
 from __future__ import annotations
 
+import threading
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -34,7 +36,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost",        # Frontend en Docker (Nginx, puerto 80)
+        "http://localhost:5173",   # Frontend en desarrollo local (Vite)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,6 +51,19 @@ app.add_middleware(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _simulacion_activa: dict | None = None
+
+# Estado de progreso de la simulación en curso (o la última ejecutada).
+_progreso: dict = {
+    "status": "idle",           # idle | running | done | error
+    "dias_completados": 0,
+    "max_dias": 0,
+    "iteraciones_completadas": 0,
+    "max_iteraciones": 0,
+    "error_detail": None,
+}
+
+# Lock para escrituras concurrentes sobre _progreso y _simulacion_activa.
+_lock = threading.Lock()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,8 +80,8 @@ class SimulationConfigIn(BaseModel):
     luces_min: float = 6.0
     luces_max: float = 10.0
     num_lineas: int = 2
-    max_dias: int = 10
-    max_iteraciones: int = 1_000
+    max_dias: int = 1000
+    max_iteraciones: int = 100_000
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -159,8 +177,11 @@ def _build_day_response(dia: int, offset: int, limit: int) -> dict:
         )
 
     records = sim["rows_by_day"][dia]
-    paginated = records[offset: offset + limit]
+    paginated_tuples = records[offset: offset + limit]
     stats_dia = next((s for s in sim["stats_por_dia"] if s["dia"] == dia), None)
+
+    exporter = sim["exporter"]
+    paginated = [exporter.format_row(r) for r in paginated_tuples]
 
     return {
         "dia": dia,
@@ -192,53 +213,88 @@ def read_root():
 
 @app.post(
     "/simulacion",
-    summary="Ejecutar una nueva simulación",
+    summary="Lanzar una nueva simulación en background",
     description=(
-        "Crea y ejecuta una simulación multi-día con los parámetros indicados. "
-        "La simulación se detiene cuando se cumple CUALQUIERA de las condiciones: "
-        "`max_dias` días completados o `max_iteraciones` iteraciones acumuladas "
-        "(el día en curso siempre se completa antes de cortar). "
-        "La simulación anterior (si existía) es reemplazada inmediatamente. "
-        "Devuelve las estadísticas globales de la simulación completa, más los "
-        "registros paginados del Día 1, y el último registro de toda la simulación."
+        "Inicia una simulación multi-día con los parámetros indicados y retorna "
+        "inmediatamente con {status: 'started'}. El progreso puede consultarse "
+        "en GET /simulacion/progreso. Cuando el status sea 'done', los endpoints "
+        "de estadísticas y tabla estarán disponibles."
     ),
 )
 def run_simulacion(
     config_in: SimulationConfigIn | None = None,
-    offset: int = Query(default=0, ge=0, description="Índice del primer registro a devolver."),
-    limit: int = Query(default=50, ge=1, description="Cantidad máxima de registros a devolver."),
 ) -> dict:
-    global _simulacion_activa
+    global _simulacion_activa, _progreso
 
     # Construir la configuración de simulación (seed siempre fija internamente)
     params = config_in.model_dump() if config_in else {}
     config = SimulationConfig(**params)
 
-    # Correr la simulación multi-día
-    sim = Simulation(config)
-    results, global_stats = sim.run()
+    # Inicializar estado de progreso
+    with _lock:
+        _progreso["status"] = "running"
+        _progreso["dias_completados"] = 0
+        _progreso["max_dias"] = config.max_dias
+        _progreso["iteraciones_completadas"] = 0
+        _progreso["max_iteraciones"] = config.max_iteraciones
+        _progreso["error_detail"] = None
+        _simulacion_activa = None
 
-    stats_por_dia = [_build_stats_for_day(r) for r in results]
-    rows_by_day = {r.dia: r.rows for r in results}
+    def _run_background():
+        global _simulacion_activa, _progreso
+        try:
+            sim = Simulation(config)
 
-    _simulacion_activa = {
-        "stats_por_dia": stats_por_dia,
-        "rows_by_day": rows_by_day,
-        "total_dias": len(results),
-        "global_stats_obj": global_stats,
-        "tiempo_ejecucion": _format_elapsed(sim.elapsed_seconds),
-        "exporter": sim.exporter,   # referencia para exportar CSV sin re-simular
-        "last_row": sim.exporter.last_row,
-    }
+            def _on_day_complete(dia: int, total_iteraciones: int):
+                with _lock:
+                    _progreso["dias_completados"] = dia
+                    _progreso["iteraciones_completadas"] = total_iteraciones
 
-    day_response = _build_day_response(dia=1, offset=offset, limit=limit)
+            results, global_stats = sim.run(on_day_complete=_on_day_complete)
 
-    return {
-        **day_response,
-        "total_dias_simulados": len(results),
-        "estadisticas_globales": _build_global_stats(_simulacion_activa),
-        "ultimo_registro": _simulacion_activa["last_row"],
-    }
+            stats_por_dia = [_build_stats_for_day(r) for r in results]
+            rows_by_day = {r.dia: r.rows for r in results}
+
+            nueva_sim = {
+                "stats_por_dia": stats_por_dia,
+                "rows_by_day": rows_by_day,
+                "total_dias": len(results),
+                "global_stats_obj": global_stats,
+                "tiempo_ejecucion": _format_elapsed(sim.elapsed_seconds),
+                "exporter": sim.exporter,
+                "last_row": sim.exporter.last_row,
+            }
+
+            with _lock:
+                _simulacion_activa = nueva_sim
+                _progreso["status"] = "done"
+                _progreso["dias_completados"] = len(results)
+                _progreso["iteraciones_completadas"] = sum(
+                    len(r.rows) for r in results
+                )
+        except Exception as exc:
+            with _lock:
+                _progreso["status"] = "error"
+                _progreso["error_detail"] = str(exc)
+
+    thread = threading.Thread(target=_run_background, daemon=True)
+    thread.start()
+
+    return {"status": "started"}
+
+
+@app.get(
+    "/simulacion/progreso",
+    summary="Estado de progreso de la simulación en curso",
+    description=(
+        "Devuelve el avance actual de la simulación: días e iteraciones completadas, "
+        "y el status general (idle | running | done | error). "
+        "Diseñado para polling periódico desde el frontend."
+    ),
+)
+def get_progreso() -> dict:
+    with _lock:
+        return dict(_progreso)
 
 
 @app.get(
@@ -272,16 +328,16 @@ def get_ultimo_registro() -> dict:
     last = sim.get("last_row")
     if last is None:
         raise HTTPException(status_code=404, detail="No hay registros disponibles.")
-    return {"ultimo_registro": last}
+    return {"ultimo_registro": sim["exporter"].format_row(last)}
 
 
-@app.get(
+@app.post(
     "/simulacion/exportar",
-    summary="Exportar vector de estado como CSV",
+    summary="Exportar vector de estado como CSV localmente",
     description=(
-        "Genera y descarga el archivo CSV completo con todos los registros de la "
-        "simulación activa. El CSV se genera al vuelo desde la memoria RAM sin "
-        "necesidad de re-simular."
+        "Genera el archivo CSV completo con todos los registros de la "
+        "simulación activa y lo guarda directamente en el disco en la "
+        "carpeta output/."
     ),
 )
 def exportar_csv():
@@ -291,12 +347,13 @@ def exportar_csv():
         raise HTTPException(status_code=500, detail="El exporter no está disponible.")
 
     csv_bytes = exporter.generate_csv_bytes()
+    
+    import os
+    os.makedirs("output", exist_ok=True)
+    with open(os.path.join("output", "vector_de_estado.csv"), "wb") as f:
+        f.write(csv_bytes)
 
-    return StreamingResponse(
-        iter([csv_bytes]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=vector_de_estado.csv"},
-    )
+    return {"status": "success", "message": "CSV guardado exitosamente en output/vector_de_estado.csv"}
 
 
 @app.get(
@@ -314,6 +371,34 @@ def get_estadisticas() -> dict:
     return {
         "total_dias": sim["total_dias"],
         "estadisticas": sim["stats_por_dia"],
+    }
+
+
+@app.get(
+    "/estadisticas/top_bloqueo",
+    summary="Top N días con mayor porcentaje de bloqueo de frenos",
+    description=(
+        "Devuelve los N días con mayor suma acumulada de porcentaje de bloqueo de frenos "
+        "entre todas las líneas, ordenados de mayor a menor. "
+        "Permite al frontend solicitar solo los datos necesarios para el gráfico de impacto, "
+        "evitando transferir el dataset completo."
+    ),
+)
+def get_top_bloqueo(
+    n: int = Query(default=10, ge=1, le=100, description="Cantidad de días a devolver (máx. 100)."),
+) -> dict:
+    sim = _require_simulacion()
+    stats = sim["stats_por_dia"]
+
+    def _sum_bloqueo(day_stat: dict) -> float:
+        bloqueo = day_stat.get("porcentaje_bloqueo_frenos", {})
+        return sum(bloqueo.values())
+
+    top = sorted(stats, key=_sum_bloqueo, reverse=True)[:n]
+    return {
+        "total_dias": sim["total_dias"],
+        "n": n,
+        "estadisticas": top,
     }
 
 

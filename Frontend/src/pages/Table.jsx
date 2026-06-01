@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSimulation } from "../context/SimulationContext";
 import simulationService from "../services/simulation.service";
 import { toast } from "sonner";
-import { Clock, Car, Truck, SlidersHorizontal, Search, Download, AlarmClock } from "lucide-react";
+import { Clock, Car, Truck, SlidersHorizontal, Search, Download, Users, AlarmClock, Play, Wrench, CheckCircle2, DoorClosed, Flag, Zap, Check, Loader2, Lock, Box } from "lucide-react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -19,8 +19,15 @@ const TIME_COLS = new Set([
 
 function isTimeCol(key) {
     if (TIME_COLS.has(key)) return true;
-    // Detectar dinámicamente columnas de fin de atención por línea
     return /^Fin_Atencion_(Frenos|Luces)_L\d+$/.test(key);
+}
+
+// Columnas que se muestran en negrita
+function isBoldCol(key) {
+    if (key === "Evento") return true;
+    if (isTimeCol(key)) return true;
+    if (/^RND_/.test(key)) return true;
+    return false;
 }
 
 function minToHHMMSS(val) {
@@ -29,8 +36,7 @@ function minToHHMMSS(val) {
     const h = Math.floor(totalSec / 3600);
     const m = Math.floor((totalSec % 3600) / 60);
     const s = Math.floor(totalSec % 60);
-    const cs = Math.round((totalSec % 1) * 100);
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(cs).padStart(2, "0")}`;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,11 +90,11 @@ function buildColumnGroups(sampleKeys) {
     groups.push(
         {
             id: "stats_atendidos", label: "Atendidos",
-            keys: ["Cant_Autos_Atendidos", "Cant_Camionetas_Atendidas"],
+            keys: ["Cant_Autos_Atendidos", "Acum_Global_Autos", "Cant_Camionetas_Atendidas", "Acum_Global_Camionetas"],
         },
         {
             id: "stats_espera", label: "Tiempos de Espera",
-            keys: ["Tiempo_Espera_Auto", "Acum_Espera_Autos", "Tiempo_Espera_Camioneta", "Acum_Espera_Camionetas"],
+            keys: ["Tiempo_Espera_Auto", "Acum_Global_Espera_Autos", "Tiempo_Espera_Camioneta", "Acum_Global_Espera_Camionetas"],
         },
     );
 
@@ -97,7 +103,7 @@ function buildColumnGroups(sampleKeys) {
         groups.push({
             id: `bloqueo_${lid}`,
             label: `Bloqueo L${lid}`,
-            keys: [`Tiempo_Bloqueo_L${lid}`, `Acum_Bloqueo_Frenos_L${lid}`],
+            keys: [`Tiempo_Bloqueo_L${lid}`, `Acum_Global_Bloqueo_Frenos_L${lid}`],
         });
     }
 
@@ -123,12 +129,14 @@ const SHORT_LABELS = {
     Prox_Llegada_Camioneta: "Próx.",
     Cola_Autos: "Autos",
     Cola_Camionetas: "Camionetas",
-    Cant_Autos_Atendidos: "Autos",
-    Cant_Camionetas_Atendidas: "Camionetas",
+    Cant_Autos_Atendidos: "Autos Día",
+    Acum_Global_Autos: "Autos Total",
+    Cant_Camionetas_Atendidas: "Cam. Día",
+    Acum_Global_Camionetas: "Cam. Total",
     Tiempo_Espera_Auto: "T. Espera",
-    Acum_Espera_Autos: "Acum.",
+    Acum_Global_Espera_Autos: "Acum. Auto",
     Tiempo_Espera_Camioneta: "T. Espera",
-    Acum_Espera_Camionetas: "Acum.",
+    Acum_Global_Espera_Camionetas: "Acum. Cam.",
     Clientes_Activos: "Clientes",
 };
 
@@ -139,7 +147,7 @@ function getShortLabel(key) {
     if (/^Tiempo_Frenos_/.test(key)) return "T. Frenos";
     if (/^Tiempo_Luces_/.test(key)) return "T. Luces";
     if (/^Tiempo_Bloqueo_/.test(key)) return "T. Bloqueo";
-    if (/^Acum_Bloqueo_/.test(key)) return "Acum.";
+    if (/^Acum_Global_Bloqueo_/.test(key)) return "Acum. Total";
     if (/^Estado_Frenos_/.test(key)) return "Est. Frenos";
     if (/^Estado_Luces_/.test(key)) return "Est. Luces";
     if (/^Vehiculo_Frenos_/.test(key)) return "Veh. Frenos";
@@ -223,13 +231,69 @@ function StatCard({ icon: Icon, label, value, color }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Celda con formato condicional
+// Celda con formato condicional y mejoras visuales
 // ─────────────────────────────────────────────────────────────────────────────
+
+function getEventIconAndColor(eventName) {
+    if (!eventName) return { icon: Zap, colorClass: "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300" };
+    if (eventName.includes("Inicializ")) return { icon: Play, colorClass: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300" };
+    if (eventName.includes("Llegada Auto")) return { icon: Car, colorClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" };
+    if (eventName.includes("Llegada Camioneta")) return { icon: Truck, colorClass: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300" };
+    if (eventName.includes("Frenos")) return { icon: Wrench, colorClass: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300" };
+    if (eventName.includes("Luces")) return { icon: CheckCircle2, colorClass: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300" };
+    if (eventName.includes("Cierre")) return { icon: DoorClosed, colorClass: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300" };
+    if (eventName.includes("Fin")) return { icon: Flag, colorClass: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300" };
+    return { icon: Zap, colorClass: "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300" };
+}
+
+function getEstadoIconAndColor(estado) {
+    if (estado === "Libre") return { icon: Check, colorClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" };
+    if (estado === "Ocupado") return { icon: Loader2, colorClass: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300" };
+    if (estado === "Bloqueado") return { icon: Lock, colorClass: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300" };
+    return { icon: Box, colorClass: "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300" };
+}
 
 function CellValue({ colKey, value, timeMode }) {
     if (value == null || value === "") return <span className="text-zinc-300 dark:text-zinc-600">—</span>;
     if (colKey === "Clientes_Activos") return <ClientesCell clientes={value} />;
-    if (timeMode && isTimeCol(colKey)) return <span>{minToHHMMSS(value)}</span>;
+    
+    if (colKey === "Evento") {
+        const { icon: EventIcon, colorClass } = getEventIconAndColor(value);
+        return (
+            <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${colorClass}`}>
+                <EventIcon className="h-3.5 w-3.5" />
+                {value}
+            </span>
+        );
+    }
+
+    if (/^Estado_/.test(colKey)) {
+        const { icon: StateIcon, colorClass } = getEstadoIconAndColor(value);
+        return (
+            <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium ${colorClass}`}>
+                <StateIcon className="h-3 w-3" />
+                {value}
+            </span>
+        );
+    }
+
+    if (isTimeCol(colKey)) {
+        return (
+            <span className="inline-block rounded bg-sky-100 px-1.5 py-0.5 font-semibold text-sky-800 dark:bg-sky-900/40 dark:text-sky-300">
+                {timeMode ? minToHHMMSS(value) : value}
+            </span>
+        );
+    }
+
+    const bold = isBoldCol(colKey);
+    if (bold) {
+        return (
+            <span className="inline-block rounded bg-zinc-200 px-1.5 py-0.5 font-semibold text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300">
+                {value}
+            </span>
+        );
+    }
+
     return <span>{value}</span>;
 }
 
@@ -237,18 +301,48 @@ function CellValue({ colKey, value, timeMode }) {
 // Fila de datos
 // ─────────────────────────────────────────────────────────────────────────────
 
-function DataRow({ record, visibleKeys, timeMode, isSticky = false }) {
+// Ancho estimado en px de columnas sticky y las que las preceden
+const COL_WIDTH_EST = { Iteracion: 52, Dia: 44, Evento: 160 };
+
+// Columnas que permanecen fijas al hacer scroll horizontal
+const STICKY_KEYS = new Set(["Evento"]);
+
+function DataRow({ record, visibleKeys, timeMode, isSticky = false, rowIndex = -1, stickyOffsets = {} }) {
+    // Zebra más notorio: filas pares con fondo gris visible
+    const isEven = rowIndex % 2 === 0;
+    const zebraClass = !isSticky && isEven
+        ? "bg-zinc-100 dark:bg-zinc-800/70"
+        : "bg-white dark:bg-zinc-950";
+
     const base = isSticky
-        ? "border-t-2 border-zinc-400 bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-900/80 font-medium sticky bottom-0 z-10"
-        : "border-b border-zinc-100 hover:bg-zinc-50/80 dark:border-zinc-800 dark:hover:bg-zinc-800/40 transition-colors";
+        ? "border-t-2 border-zinc-400 bg-zinc-200/80 dark:border-zinc-600 dark:bg-zinc-700/60 font-medium sticky bottom-0 z-10"
+        : `border-b border-zinc-100 hover:bg-blue-50/60 dark:border-zinc-800 dark:hover:bg-zinc-700/30 transition-colors ${zebraClass}`;
+
+    // Fondo opaco de la celda sticky — debe coincidir con el zebra de la fila
+    const stickyTdBg = isSticky
+        ? "bg-zinc-200/80 dark:bg-zinc-700/60"
+        : isEven
+            ? "bg-zinc-100 dark:bg-zinc-800/70"
+            : "bg-white dark:bg-zinc-950";
 
     return (
         <tr className={base}>
-            {visibleKeys.map(key => (
-                <td key={key} className="whitespace-nowrap px-3 py-2 text-xs text-zinc-700 dark:text-zinc-300">
-                    <CellValue colKey={key} value={record[key]} timeMode={timeMode} />
-                </td>
-            ))}
+            {visibleKeys.map((key) => {
+                const isStickyCol = STICKY_KEYS.has(key);
+                const leftOffset = stickyOffsets[key];
+                const stickyStyle = isStickyCol && leftOffset !== undefined
+                    ? { position: "sticky", left: leftOffset, zIndex: 5 }
+                    : {};
+                return (
+                    <td key={key} style={stickyStyle}
+                        className={[
+                            "whitespace-nowrap border-r border-zinc-200 px-3 py-2 text-center align-middle text-xs text-zinc-700 last:border-r-0 dark:border-zinc-800 dark:text-zinc-300",
+                            isStickyCol ? `${stickyTdBg} shadow-[2px_0_6px_-1px_rgba(0,0,0,0.15)]` : "",
+                        ].join(" ")}>
+                        <CellValue colKey={key} value={record[key]} timeMode={timeMode} />
+                    </td>
+                );
+            })}
         </tr>
     );
 }
@@ -295,6 +389,14 @@ export default function Table() {
         [columnGroups, visibleGroupsResolved, allKeys]
     );
 
+    // Evento siempre pega al borde izquierdo (left: 0)
+    const stickyOffsets = useMemo(() => {
+        const offsets = {};
+        for (const key of visibleKeys) {
+            if (STICKY_KEYS.has(key)) offsets[key] = 0;
+        }
+        return offsets;
+    }, [visibleKeys]);
     const clampDia = (val) => {
         const n = parseInt(val, 10);
         if (isNaN(n)) return 1;
@@ -376,11 +478,18 @@ export default function Table() {
                     </p>
                 </div>
                 <button
-                    onClick={() => simulationService.downloadCsv()}
+                    onClick={async () => {
+                        try {
+                            const res = await simulationService.downloadCsv();
+                            toast.success("CSV guardado", { description: res.message || "Archivo guardado exitosamente." });
+                        } catch (err) {
+                            toast.error("Error", { description: "Hubo un problema al guardar el CSV." });
+                        }
+                    }}
                     className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 active:scale-[0.98]"
                 >
                     <Download className="h-4 w-4" />
-                    Descargar CSV
+                    Guardar CSV Local
                 </button>
             </div>
 
@@ -406,7 +515,7 @@ export default function Table() {
                         color="bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
                     />
                     <StatCard
-                        icon={AlarmClock}
+                        icon={Users}
                         label="Máx. Cola del Día"
                         value={stats.max_cola != null ? `${stats.max_cola} veh.` : "—"}
                         color="bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400"
@@ -437,27 +546,27 @@ export default function Table() {
                     </button>
                     {totalDias && (
                         <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-                            {totalDias} días simulados
+                            {totalDias} Días Simulados
                         </span>
                     )}
                 </form>
 
-                {/* Toggle formato de tiempo */}
-                <button
-                    onClick={() => setTimeMode(v => !v)}
-                    className={[
-                        "flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
-                        timeMode
-                            ? "border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-400"
-                            : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-                    ].join(" ")}
-                >
-                    <AlarmClock className="h-3.5 w-3.5" />
-                    {timeMode ? "HH:MM:SS" : "Minutos"}
-                </button>
+                {/* Controles de la derecha (Columnas y Formato) */}
+                <div className="relative ml-auto flex gap-3">
+                    {/* Toggle formato de tiempo */}
+                    <button
+                        onClick={() => setTimeMode(v => !v)}
+                        className={[
+                            "flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
+                            timeMode
+                                ? "border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-400"
+                                : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
+                        ].join(" ")}
+                    >
+                        <AlarmClock className="h-3.5 w-3.5" />
+                        {timeMode ? "HH:MM:SS" : "Minutos"}
+                    </button>
 
-                {/* Filtro de columnas */}
-                <div className="relative ml-auto">
                     <button
                         onClick={() => setShowColumnMenu(v => !v)}
                         className="flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
@@ -471,6 +580,27 @@ export default function Table() {
                             <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-400">
                                 Grupos de Columnas
                             </p>
+                            {/* Seleccionar / Deseleccionar todas */}
+                            {(() => {
+                                const toggleable = columnGroups.filter(g => !g.fixed);
+                                const allOn = toggleable.every(g => visibleGroupsResolved[g.id] !== false);
+                                return (
+                                    <button
+                                        onClick={() => {
+                                            const next = !allOn;
+                                            setVisibleGroups(v => {
+                                                const updated = { ...v };
+                                                for (const g of toggleable) updated[g.id] = next;
+                                                return updated;
+                                            });
+                                        }}
+                                        className="mb-2 w-full rounded-md border border-zinc-200 px-2 py-1 text-left text-xs font-medium text-zinc-600 transition hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                                    >
+                                        {allOn ? "Deseleccionar Todas" : "Seleccionar Todas"}
+                                    </button>
+                                );
+                            })()}
+                            <div className="mb-2 h-px bg-zinc-100 dark:bg-zinc-800" />
                             {columnGroups.map((group) => (
                                 <label
                                     key={group.id}
@@ -493,7 +623,7 @@ export default function Table() {
                                     />
                                     {group.label}
                                     {group.fixed && (
-                                        <span className="ml-auto text-xs text-zinc-300 dark:text-zinc-600">fijo</span>
+                                        <span className="ml-auto text-xs text-zinc-300 dark:text-zinc-600">Fijo</span>
                                     )}
                                 </label>
                             ))}
@@ -529,14 +659,25 @@ export default function Table() {
                                 </tr>
                                 {/* Fila 2: columnas individuales */}
                                 <tr className="border-t border-zinc-200 dark:border-zinc-700">
-                                    {visibleKeys.map(key => (
-                                        <th
-                                            key={key}
-                                            className="whitespace-nowrap px-3 py-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400"
-                                        >
-                                            {getShortLabel(key)}
-                                        </th>
-                                    ))}
+                                    {visibleKeys.map(key => {
+                                        const isStickyCol = STICKY_KEYS.has(key);
+                                        const leftOffset = stickyOffsets[key];
+                                        const stickyStyle = isStickyCol && leftOffset !== undefined
+                                            ? { position: "sticky", left: leftOffset, zIndex: 30 }
+                                            : {};
+                                        return (
+                                            <th
+                                                key={key}
+                                                style={stickyStyle}
+                                                className={[
+                                                    "whitespace-nowrap border-r border-zinc-200 px-3 py-2 text-center align-middle text-xs font-semibold text-zinc-500 last:border-r-0 dark:border-zinc-700 dark:text-zinc-400",
+                                                    isStickyCol ? "bg-zinc-50 shadow-[2px_0_6px_-1px_rgba(0,0,0,0.15)] dark:bg-zinc-900" : "",
+                                                ].join(" ")}
+                                            >
+                                                {getShortLabel(key)}
+                                            </th>
+                                        );
+                                    })}
                                 </tr>
                             </thead>
                             <tbody className="bg-white dark:bg-zinc-950">
@@ -553,14 +694,16 @@ export default function Table() {
                                         </td>
                                     </tr>
                                 ) : (
-                                    records.map((rec, idx) => (
-                                        <DataRow
-                                            key={idx}
-                                            record={rec}
-                                            visibleKeys={visibleKeys}
-                                            timeMode={timeMode}
-                                        />
-                                    ))
+                                records.map((rec, idx) => (
+                                    <DataRow
+                                        key={idx}
+                                        record={rec}
+                                        visibleKeys={visibleKeys}
+                                        timeMode={timeMode}
+                                        rowIndex={idx}
+                                        stickyOffsets={stickyOffsets}
+                                    />
+                                ))
                                 )}
                                 {/* Sticky bottom: último registro de la simulación */}
                                 {lastRow && visibleKeys.length > 0 && (
@@ -569,6 +712,7 @@ export default function Table() {
                                         visibleKeys={visibleKeys}
                                         timeMode={timeMode}
                                         isSticky
+                                        stickyOffsets={stickyOffsets}
                                     />
                                 )}
                             </tbody>
@@ -576,13 +720,6 @@ export default function Table() {
                     </div>
                 </div>
             </div>
-
-            {/* Leyenda sticky row */}
-            {lastRow && (
-                <p className="text-xs text-zinc-400 dark:text-zinc-600">
-                    ↑ La fila sombreada al fondo es el último registro de toda la simulación (siempre visible).
-                </p>
-            )}
 
             {/* Paginación */}
             {pagination && (

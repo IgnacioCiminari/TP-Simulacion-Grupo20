@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from core.event import Event
-from entities.vehicle import VehicleState
+from entities.vehicle import VehicleState, VehicleType
+import events.fin_frenos as efrenos
 
 if TYPE_CHECKING:
     from core.simulation import Simulation
@@ -33,8 +34,6 @@ class FinRevisionLuces(Event):
         return f"Fin Revisión Luces L{self.line_id}"
 
     def process(self, sim: "Simulation") -> list[Event]:
-        from events.fin_frenos import _dequeue_to_frenos
-
         state = sim.state
         new_events: list[Event] = []
 
@@ -50,6 +49,7 @@ class FinRevisionLuces(Event):
 
         exiting_vehicle = luces.finish_service(state.clock)
         exiting_vehicle.estado = VehicleState.RETIRADO
+        state.track_vehicle_exit(exiting_vehicle.id)
 
         # Acumular estadísticas de espera en cola.
         # El tiempo de espera es 0 para vehículos que entraron directo a Frenos.
@@ -58,7 +58,7 @@ class FinRevisionLuces(Event):
         # para todos los vehículos (directos o por cola).
         if not exiting_vehicle._already_counted:
             wait = exiting_vehicle.tiempo_espera_en_cola()
-            if exiting_vehicle.tipo.value == "Auto":
+            if exiting_vehicle.tipo == VehicleType.AUTO:
                 state.total_espera_autos += wait
                 state.count_autos_atendidos += 1
                 sim.row_context["tiempo_espera_auto"] = wait
@@ -90,11 +90,12 @@ class FinRevisionLuces(Event):
             blocked_vehicle.estado = VehicleState.EN_LUCES
             blocked_vehicle.hora_inicio_bloqueo = None
             luces.start_service(blocked_vehicle, state.clock, fin_luces)
+            state.track_vehicle_update(blocked_vehicle, linea=self.line_id)
 
             new_events.append(FinRevisionLuces(timestamp=fin_luces, line_id=self.line_id))
 
             # Frenos queda libre: intentar tomar el siguiente de la cola
-            new_events.extend(_dequeue_to_frenos(line, sim))
+            new_events.extend(efrenos._dequeue_to_frenos(line, sim))
 
         # Si no había bloqueo, Luces ya quedó libre arriba. No hay nada más que hacer.
 

@@ -5,10 +5,11 @@ import { toast } from "sonner";
 import {
     BarChart, Bar,
     AreaChart, Area,
+    ComposedChart, Line,
     XAxis, YAxis, CartesianGrid, Tooltip, Legend,
     ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, AlertTriangle, BarChart3, Clock, Loader2 } from "lucide-react";
+import { TrendingUp, AlertTriangle, BarChart3, Clock, Loader2, Activity } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Top N días por métrica (descendente)
@@ -76,7 +77,8 @@ function ChartCard({ title, subtitle, icon: Icon, children }) {
 // Paleta de colores para N líneas de frenos
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BRAKE_COLORS = ["#ef4444", "#f97316", "#eab308", "#a855f7", "#06b6d4", "#10b981"];
+const BLOQUEO_COLORS = ["#ef4444", "#f97316", "#eab308", "#a855f7", "#06b6d4", "#10b981"];
+const SERVICIO_COLORS = ["#10b981", "#059669", "#047857", "#34d399", "#6ee7b7", "#a7f3d0"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Normalizar: aplanar porcentaje_bloqueo_frenos y calcular ocupación
@@ -84,13 +86,18 @@ const BRAKE_COLORS = ["#ef4444", "#f97316", "#eab308", "#a855f7", "#06b6d4", "#1
 
 function normalizeDay(d) {
     const bloqueo = d.porcentaje_bloqueo_frenos || {};
+    const totalServicio = d.total_servicio_min || {};
     const lineIds = Object.keys(bloqueo).map(Number).sort((a, b) => a - b);
 
-    // Ocupación = 100 - promedio de bloqueo de todas las líneas
-    const avgBloqueo = lineIds.length
-        ? lineIds.reduce((s, lid) => s + (bloqueo[String(lid)] ?? 0), 0) / lineIds.length
+    // Suma de bloqueos para el scatter
+    const sumBloqueo = lineIds.length
+        ? lineIds.reduce((s, lid) => s + (bloqueo[String(lid)] ?? 0), 0)
         : 0;
-    const ocupacion = Math.max(0, 100 - avgBloqueo);
+
+    const waitAuto = d.promedio_espera_autos_min ?? 0;
+    const waitCam = d.promedio_espera_camionetas_min ?? 0;
+    // Un promedio simple o suma (para visualización correlacional)
+    const avgEspera = (waitAuto + waitCam) / 2;
 
     const flat = {
         dia: d.dia,
@@ -99,10 +106,13 @@ function normalizeDay(d) {
         camionetas_atendidas: d.camionetas_atendidas ?? 0,
         fin_jornada_min: d.fin_jornada_min ?? 0,
         fin_jornada_hhmm: d.fin_jornada_hhmm ?? "",
-        ocupacion: parseFloat(ocupacion.toFixed(2)),
+        avg_bloqueo: parseFloat(sumBloqueo.toFixed(2)),
+        avg_espera: parseFloat(avgEspera.toFixed(2)),
     };
+
     for (const lid of lineIds) {
         flat[`bloqueo_l${lid}`] = parseFloat((bloqueo[String(lid)] ?? 0).toFixed(2));
+        flat[`servicio_l${lid}`] = parseFloat((totalServicio[String(lid)] ?? 0).toFixed(2));
     }
     return flat;
 }
@@ -142,6 +152,20 @@ export default function Graph() {
     const [lineIds, setLineIds] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    // Gráfico 1
+    const [topBloqueoN, setTopBloqueoN] = useState(10);
+    // Gráfico 2
+    const [topServicioN, setTopServicioN] = useState(10);
+    // Gráfico 3
+    const [diasDesde, setDiasDesde] = useState(1);
+    const [diasHasta, setDiasHasta] = useState(null);
+    const [g3GroupMode, setG3GroupMode] = useState("auto");
+    // Gráfico 4
+    const [topImpactoN, setTopImpactoN] = useState(10);
+    const [topImpactoData, setTopImpactoData] = useState([]);
+    const [topImpactoLoading, setTopImpactoLoading] = useState(false);
+    // Gráfico 5
+    const [intervaloCierre, setIntervaloCierre] = useState(5);
 
     useEffect(() => {
         const fetchStats = async () => {
@@ -151,6 +175,8 @@ export default function Graph() {
                 const normalized = result.estadisticas.map(normalizeDay);
                 setRawData(normalized);
                 setTotalDias(result.total_dias);
+                // Inicializar rango con el total de días reales
+                setDiasHasta(result.total_dias);
 
                 // Detectar IDs de líneas desde los datos del primer día
                 if (result.estadisticas.length > 0) {
@@ -168,6 +194,29 @@ export default function Graph() {
         fetchStats();
     }, []);
 
+    // Fetch del top N al backend cada vez que cambia N — solo trae los datos necesarios
+    useEffect(() => {
+        if (error) return;
+        const fetchTop = async () => {
+            setTopImpactoLoading(true);
+            try {
+                const result = await simulationService.getTopBloqueo(topImpactoN);
+                // Normalizar y ordenar por día para que la línea sea cronológica
+                const normalized = result.estadisticas
+                    .map(normalizeDay)
+                    .sort((a, b) => a.dia - b.dia)
+                    .map(d => ({ label: `D.${d.dia}`, bloqueo: d.avg_bloqueo, espera: d.avg_espera }));
+                setTopImpactoData(normalized);
+            } catch (_) {
+                // No fatal: el gráfico simplemente queda vacío
+            } finally {
+                setTopImpactoLoading(false);
+            }
+        };
+        fetchTop();
+    }, [topImpactoN, error]);
+
+    // groupSize global (usado por el badge del header; G3 usa el suyo propio)
     const groupSize = useMemo(() => {
         if (!rawData) return 1;
         const n = rawData.length;
@@ -178,32 +227,97 @@ export default function Graph() {
     }, [rawData]);
 
     const isGrouped = groupSize > 1;
-    const TOP_N = 10;
 
-    // ── Gráfico 1: Top peores días de bloqueo ─────────────────────────────
+    // ── Gráfico 1: Top Peores Días de Bloqueo ──────────────────────────────
     const worstBloqueoData = useMemo(() => {
         if (!rawData || lineIds.length === 0) return [];
-        // Ordenar por suma de bloqueo de todas las líneas
-        return topWorstDays(rawData, d => lineIds.reduce((s, lid) => s + (d[`bloqueo_l${lid}`] ?? 0), 0), Math.min(TOP_N, rawData.length));
-    }, [rawData, lineIds]);
+        return topWorstDays(rawData, d => lineIds.reduce((s, lid) => s + (d[`bloqueo_l${lid}`] ?? 0), 0), Math.min(topBloqueoN, rawData.length));
+    }, [rawData, lineIds, topBloqueoN]);
 
-    // ── Gráfico 2: Top días con mayor ocupación de servidores ─────────────
-    const topOcupacionData = useMemo(() => {
-        if (!rawData) return [];
-        return topWorstDays(rawData, d => d.ocupacion, Math.min(TOP_N, rawData.length));
-    }, [rawData]);
+    // ── Gráfico 2: Top Días con Mayor Tiempo de Atención ───────────────────
+    const topServicioData = useMemo(() => {
+        if (!rawData || lineIds.length === 0) return [];
+        return topWorstDays(rawData, d => lineIds.reduce((s, lid) => s + (d[`servicio_l${lid}`] ?? 0), 0), Math.min(topServicioN, rawData.length));
+    }, [rawData, lineIds, topServicioN]);
 
-    // ── Gráfico 3: Vehículos atendidos por día (serie temporal) ───────────
+    // ── Gráfico 3: Productividad por Jornada ───────────────────────────────
+    // Tamaño del slice activo
+    const sliceSize = useMemo(() => {
+        if (!rawData) return 0;
+        const desde = Math.max(1, diasDesde || 1);
+        const hasta = Math.min(rawData.length, diasHasta || rawData.length);
+        return Math.max(0, hasta - desde + 1);
+    }, [rawData, diasDesde, diasHasta]);
+
+    // Opciones de agrupamiento válidas: que produzcan entre 3 y 60 puntos y tengan sentido
+    const g3GroupOptions = useMemo(() => {
+        if (sliceSize <= 0) return [1];
+        const candidates = [1, 7, 14, 30, 60, 90];
+        return candidates.filter(c => {
+            const points = Math.ceil(sliceSize / c);
+            return points >= 3 && c <= sliceSize;
+        });
+    }, [sliceSize]);
+
+    // Agrupamiento efectivo: auto calcula basado en el slice; manual usa el seleccionado (clampeado)
+    const g3EffectiveGroupSize = useMemo(() => {
+        if (g3GroupMode === "auto") {
+            if (sliceSize <= THRESHOLD) return 1;
+            if (sliceSize <= 200) return 7;
+            if (sliceSize <= 600) return 30;
+            return Math.ceil(sliceSize / 20);
+        }
+        // Si la opción manual ya no es válida, caer a 1
+        const maxGroup = sliceSize > 0 ? Math.floor(sliceSize / 3) : 1;
+        return Math.min(g3GroupMode, Math.max(maxGroup, 1));
+    }, [g3GroupMode, sliceSize]);
+
+    // Resetear a "auto" cuando cambia el rango
+    useEffect(() => { setG3GroupMode("auto"); }, [diasDesde, diasHasta]);
+
     const atendidosData = useMemo(() => {
         if (!rawData) return [];
-        return downsample(rawData, groupSize);
-    }, [rawData, groupSize]);
+        const desde = Math.max(1, diasDesde || 1);
+        const hasta = Math.min(rawData.length, diasHasta || rawData.length);
+        const slice = rawData.filter(d => d.dia >= desde && d.dia <= hasta);
+        return downsample(slice, g3EffectiveGroupSize);
+    }, [rawData, g3EffectiveGroupSize, diasDesde, diasHasta]);
 
-    // ── Gráfico 4: Top peores días por hora de cierre ─────────────────────
-    const worstCierreData = useMemo(() => {
-        if (!rawData) return [];
-        return topWorstDays(rawData, d => d.fin_jornada_min, Math.min(TOP_N, rawData.length));
-    }, [rawData]);
+    // ── Gráfico 5: Histograma de Distribución de Horas de Cierre ──────────
+    const histCierreData = useMemo(() => {
+        if (!rawData || rawData.length === 0) return [];
+        const mins = rawData.map(d => d.fin_jornada_min).filter(m => m > 0);
+        if (mins.length === 0) return [];
+        const minCierre = Math.min(...mins);
+        const iv = intervaloCierre;
+
+        const bins = {};
+        for (const d of rawData) {
+            const min = d.fin_jornada_min;
+            if (min <= 0) continue;
+            if (min === minCierre) {
+                bins["default"] = (bins["default"] || 0) + 1;
+            } else {
+                const binStart = Math.floor(min / iv) * iv;
+                bins[binStart] = (bins[binStart] || 0) + 1;
+            }
+        }
+
+        const sortedKeys = Object.keys(bins).sort((a, b) => {
+            if (a === "default") return -1;
+            if (b === "default") return 1;
+            return Number(a) - Number(b);
+        });
+
+        return sortedKeys.map(k => {
+            if (k === "default") {
+                return { binStart: minCierre, label: `${minToHHMM(minCierre)} (Puntual)`, frecuencia: bins[k] };
+            }
+            const b = Number(k);
+            return { binStart: b, label: `${minToHHMM(b)} – ${minToHHMM(b + iv)}`, frecuencia: bins[k] };
+        });
+    }, [rawData, intervaloCierre]);
+
 
     // ── Estados de UI ──────────────────────────────────────────────────────
     if (loading) {
@@ -256,55 +370,117 @@ export default function Graph() {
                 title="Cuello de Botella: Top días con mayor bloqueo"
                 subtitle={`Los ${worstBloqueoData.length} días con mayor % de tiempo en bloqueo por líneas de frenos`}
             >
+                <div className="mb-4 flex items-center gap-2">
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Mostrar Top:</span>
+                    {[5, 10, 15, 20].map(n => (
+                        <button key={n} onClick={() => setTopBloqueoN(n)}
+                            className={["rounded-full px-2.5 py-0.5 text-xs font-semibold transition",
+                                topBloqueoN === n ? "bg-red-500 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"].join(" ")}>
+                            {n}
+                        </button>
+                    ))}
+                    <span className="ml-auto text-xs text-zinc-400">de {totalDias} Días Totales</span>
+                </div>
                 <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={worstBloqueoData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                    <BarChart key={topBloqueoN} data={worstBloqueoData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid, #e4e4e7)" />
                         <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} />
                         <YAxis tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} axisLine={false} tickFormatter={v => `${v}%`} />
                         <Tooltip content={<CustomTooltip />} />
                         <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
                         {lineIds.map((lid, idx) => (
-                            <Bar
-                                key={lid}
-                                dataKey={`bloqueo_l${lid}`}
-                                name={`Bloqueo L${lid} (%)`}
-                                fill={BRAKE_COLORS[idx % BRAKE_COLORS.length]}
-                                radius={[4, 4, 0, 0]}
-                                stackId="bloqueo"
-                            />
+                            <Bar key={lid} dataKey={`bloqueo_l${lid}`} name={`Bloqueo L${lid} (%)`}
+                                fill={BLOQUEO_COLORS[idx % BLOQUEO_COLORS.length]} radius={[4, 4, 0, 0]} stackId="bloqueo"
+                                isAnimationActive={false} />
                         ))}
                     </BarChart>
                 </ResponsiveContainer>
             </ChartCard>
 
-            {/* ── Gráfico 2: Top ocupación de servidores ─── */}
+            {/* ── Gráfico 2: Top atención de servidores ─── */}
             <ChartCard
                 icon={TrendingUp}
-                title="Top días con mayor ocupación de servidores"
-                subtitle={`Los ${topOcupacionData.length} días donde los servidores estuvieron más ocupados (menos tiempo bloqueados)`}
+                title="Top días con mayor tiempo de atención"
+                subtitle={`Los ${topServicioData.length} días donde los servidores estuvieron más tiempo en servicio activo`}
             >
+                <div className="mb-4 flex items-center gap-2">
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Mostrar Top:</span>
+                    {[5, 10, 15, 20].map(n => (
+                        <button key={n} onClick={() => setTopServicioN(n)}
+                            className={["rounded-full px-2.5 py-0.5 text-xs font-semibold transition",
+                                topServicioN === n ? "bg-emerald-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"].join(" ")}>
+                            {n}
+                        </button>
+                    ))}
+                    <span className="ml-auto text-xs text-zinc-400">de {totalDias} Días Totales</span>
+                </div>
                 <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={topOcupacionData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                    <BarChart key={topServicioN} data={topServicioData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid, #e4e4e7)" />
                         <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} />
-                        <YAxis
-                            domain={[0, 100]}
-                            tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} axisLine={false}
-                            tickFormatter={v => `${v}%`}
-                        />
+                        <YAxis tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} axisLine={false} tickFormatter={v => `${v}m`} />
                         <Tooltip content={<CustomTooltip />} />
                         <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
-                        <Bar dataKey="ocupacion" name="Ocupación (%)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                        {lineIds.map((lid, idx) => (
+                            <Bar key={lid} dataKey={`servicio_l${lid}`} name={`Servicio L${lid} (min)`}
+                                fill={SERVICIO_COLORS[idx % SERVICIO_COLORS.length]} radius={[4, 4, 0, 0]} stackId="servicio"
+                                isAnimationActive={false} />
+                        ))}
                     </BarChart>
                 </ResponsiveContainer>
             </ChartCard>
 
-            {/* ── Gráfico 3: Vehículos atendidos por día ─── */}
+            {/* ── Gráfico 3: Vehículos Atendidos por Día ─── */}
             <ChartCard
                 icon={BarChart3}
                 title="Productividad por Jornada"
-                subtitle="Cantidad de vehículos atendidos por día (o promedio por período si está agrupado)"
+                subtitle={`Vehículos atendidos por día${g3EffectiveGroupSize > 1 ? ` · agrupado cada ${g3EffectiveGroupSize} días` : ""} — D.${Math.max(1, diasDesde || 1)} a D.${diasHasta || totalDias}`}
             >
+                {/* Rango de días */}
+                <div className="mb-3 flex flex-wrap items-center gap-3">
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Rango:</span>
+                    <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-zinc-400">Desde</span>
+                        <input
+                            type="number" min={1} max={diasHasta || totalDias} value={diasDesde}
+                            onChange={e => setDiasDesde(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="h-7 w-16 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-900 outline-none focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                        />
+                        <span className="text-xs text-zinc-400">Hasta</span>
+                        <input
+                            type="number" min={diasDesde} max={totalDias} value={diasHasta || totalDias}
+                            onChange={e => setDiasHasta(Math.min(totalDias, parseInt(e.target.value) || totalDias))}
+                            className="h-7 w-16 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-900 outline-none focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                        />
+                    </div>
+                    <button
+                        onClick={() => { setDiasDesde(1); setDiasHasta(totalDias); }}
+                        className="rounded-md border border-zinc-200 px-2 py-0.5 text-xs text-zinc-500 transition hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                    >
+                        Restablecer
+                    </button>
+                    <span className="ml-auto text-xs text-zinc-400">
+                        {atendidosData.length} {atendidosData.length !== 1 ? "Puntos" : "Punto"}{g3EffectiveGroupSize > 1 ? ` (c/${g3EffectiveGroupSize} días)` : ""}
+                    </span>
+                </div>
+                {/* Agrupamiento */}
+                <div className="mb-4 flex items-center gap-2">
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Agrupar:</span>
+                    {/* Auto siempre disponible */}
+                    <button onClick={() => setG3GroupMode("auto")}
+                        className={["rounded-full px-2.5 py-0.5 text-xs font-semibold transition",
+                            g3GroupMode === "auto" ? "bg-blue-500 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"].join(" ")}>
+                        Auto{g3GroupMode === "auto" && g3EffectiveGroupSize > 1 ? ` (${g3EffectiveGroupSize}d)` : ""}
+                    </button>
+                    {/* Opciones manuales válidas para el rango activo */}
+                    {g3GroupOptions.map(opt => (
+                        <button key={opt} onClick={() => setG3GroupMode(opt)}
+                            className={["rounded-full px-2.5 py-0.5 text-xs font-semibold transition",
+                                g3GroupMode === opt ? "bg-blue-500 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"].join(" ")}>
+                            {opt === 1 ? "1 Día" : `${opt} Días`}
+                        </button>
+                    ))}
+                </div>
                 <ResponsiveContainer width="100%" height={300}>
                     <AreaChart data={atendidosData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                         <defs>
@@ -322,53 +498,129 @@ export default function Graph() {
                         <YAxis tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} axisLine={false} />
                         <Tooltip content={<CustomTooltip />} />
                         <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
-                        <Area
-                            type="monotone"
-                            dataKey="autos_atendidos"
-                            name={isGrouped ? "Autos (prom.)" : "Autos atendidos"}
-                            stroke="#3b82f6" strokeWidth={2} fill="url(#gradAutos)"
-                        />
-                        <Area
-                            type="monotone"
-                            dataKey="camionetas_atendidas"
-                            name={isGrouped ? "Camionetas (prom.)" : "Camionetas atendidas"}
-                            stroke="#f59e0b" strokeWidth={2} fill="url(#gradCamionetas)"
-                        />
+                        <Area type="monotone" dataKey="autos_atendidos"
+                            name={g3EffectiveGroupSize > 1 ? "Autos (prom.)" : "Autos Atendidos"}
+                            stroke="#3b82f6" strokeWidth={2} fill="url(#gradAutos)" />
+                        <Area type="monotone" dataKey="camionetas_atendidas"
+                            name={g3EffectiveGroupSize > 1 ? "Camionetas (prom.)" : "Camionetas Atendidas"}
+                            stroke="#f59e0b" strokeWidth={2} fill="url(#gradCamionetas)" />
                     </AreaChart>
                 </ResponsiveContainer>
             </ChartCard>
 
-            {/* ── Gráfico 4: Top peores días por hora de cierre ─── */}
+            {/* ── Gráfico 4: Top N días por Bloqueo vs Espera ─── */}
             <ChartCard
-                icon={Clock}
-                title="Top días con hora de cierre más tardía"
-                subtitle={`Los ${worstCierreData.length} días donde la jornada finalizó más tarde`}
+                icon={Activity}
+                title="Impacto del Bloqueo en la Espera"
+                subtitle={`Top ${topImpactoData.length} días con mayor % de bloqueo — ordenados cronológicamente`}
             >
-                <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={worstCierreData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                {/* Selector de N */}
+                <div className="mb-4 flex items-center gap-2">
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Mostrar top:</span>
+                    {[5, 10, 15, 20].map(n => (
+                        <button
+                            key={n}
+                            onClick={() => setTopImpactoN(n)}
+                            disabled={topImpactoLoading}
+                            className={[
+                                "rounded-full px-2.5 py-0.5 text-xs font-semibold transition",
+                                topImpactoN === n
+                                    ? "bg-violet-600 text-white"
+                                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700",
+                                topImpactoLoading ? "opacity-50 cursor-not-allowed" : "",
+                            ].join(" ")}
+                        >
+                            {n}
+                        </button>
+                    ))}
+                    {rawData && (
+                        <span className="ml-auto text-xs text-zinc-400">
+                            {topImpactoLoading ? "Cargando..." : `de ${rawData.length} días totales`}
+                        </span>
+                    )}
+                </div>
+                <ResponsiveContainer width="100%" height={280}>
+                    {/* key fuerza remount limpio al cambiar N, evitando artefactos de animación */}
+                    <ComposedChart key={topImpactoN} data={topImpactoData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid, #e4e4e7)" />
                         <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} />
                         <YAxis
-                            tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} axisLine={false}
-                            tickFormatter={v => minToHHMM(v)}
+                            yAxisId="left"
+                            tick={{ fontSize: 11, fill: "#71717a" }}
+                            tickLine={false}
+                            axisLine={false}
+                            tickFormatter={v => `${v}%`}
                         />
+                        <YAxis
+                            yAxisId="right"
+                            orientation="right"
+                            tick={{ fontSize: 11, fill: "#71717a" }}
+                            tickLine={false}
+                            axisLine={false}
+                            tickFormatter={v => `${v}m`}
+                        />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
+                        <Bar
+                            yAxisId="left"
+                            dataKey="bloqueo"
+                            name="Bloqueo (%)"
+                            fill="#8b5cf6"
+                            radius={[4, 4, 0, 0]}
+                            opacity={0.85}
+                            isAnimationActive={false}
+                        />
+                        <Line
+                            yAxisId="right"
+                            type="monotone"
+                            dataKey="espera"
+                            name="Espera prom. (min)"
+                            stroke="#f59e0b"
+                            strokeWidth={2}
+                            dot={{ r: 4, fill: "#f59e0b" }}
+                            isAnimationActive={false}
+                        />
+                    </ComposedChart>
+                </ResponsiveContainer>
+            </ChartCard>
+
+            {/* ── Gráfico 5: Distribución de Horas de Cierre ─── */}
+            <ChartCard
+                icon={Clock}
+                title="Distribución de Horas de Cierre"
+                subtitle={`Frecuencia de cierre en intervalos de ${intervaloCierre} min (el cierre puntual siempre se separa)`}
+            >
+                <div className="mb-4 flex items-center gap-2">
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Intervalo:</span>
+                    {[5, 10, 15, 30].map(iv => (
+                        <button key={iv} onClick={() => setIntervaloCierre(iv)}
+                            className={["rounded-full px-2.5 py-0.5 text-xs font-semibold transition",
+                                intervaloCierre === iv ? "bg-cyan-500 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"].join(" ")}>
+                            {iv} min
+                        </button>
+                    ))}
+                    <span className="ml-auto text-xs text-zinc-400">{histCierreData.length} bins</span>
+                </div>
+                <ResponsiveContainer width="100%" height={260}>
+                    <BarChart key={intervaloCierre} data={histCierreData} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid, #e4e4e7)" />
+                        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#71717a" }} tickLine={false} />
+                        <YAxis tick={{ fontSize: 11, fill: "#71717a" }} tickLine={false} axisLine={false} />
                         <Tooltip
+                            cursor={{ fill: "transparent" }}
                             content={({ active, payload, label }) => {
                                 if (!active || !payload?.length) return null;
                                 return (
                                     <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
                                         <p className="mb-1.5 font-semibold text-zinc-700 dark:text-zinc-200">{label}</p>
-                                        {payload.map(p => (
-                                            <p key={p.dataKey} style={{ color: p.color }}>
-                                                Cierre: <span className="font-medium">{minToHHMM(p.value)}</span>
-                                            </p>
-                                        ))}
+                                        <p style={{ color: "#06b6d4" }}>
+                                            Días: <span className="font-medium">{payload[0].value}</span>
+                                        </p>
                                     </div>
                                 );
                             }}
                         />
-                        <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
-                        <Bar dataKey="fin_jornada_min" name="Hora de cierre" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="frecuencia" name="Frecuencia (Días)" fill="#06b6d4" radius={[4, 4, 0, 0]} isAnimationActive={false} />
                     </BarChart>
                 </ResponsiveContainer>
             </ChartCard>

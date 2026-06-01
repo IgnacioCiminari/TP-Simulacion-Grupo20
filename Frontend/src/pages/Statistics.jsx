@@ -266,11 +266,18 @@ export default function Statistics() {
                     Ver Gráficos
                 </button>
                 <button
-                    onClick={() => simulationService.downloadCsv()}
+                    onClick={async () => {
+                        try {
+                            const res = await simulationService.downloadCsv();
+                            toast.success("CSV guardado", { description: res.message || "Archivo guardado exitosamente." });
+                        } catch (err) {
+                            toast.error("Error", { description: "Hubo un problema al guardar el CSV." });
+                        }
+                    }}
                     className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 active:scale-[0.98]"
                 >
                     <Download className="h-4 w-4" />
-                    Descargar CSV
+                    Guardar CSV Local
                 </button>
             </div>
         </div>

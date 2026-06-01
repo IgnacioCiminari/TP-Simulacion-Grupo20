@@ -41,6 +41,11 @@ class SimulationState:
         # Hora de finalización real de la jornada
         self.fin_jornada: float | None = None
 
+        # Caché diferencial de vehículos activos: {id: dict}.
+        # Se actualiza por evento en lugar de reconstruirse en cada snapshot.
+        # snapshot_active_vehicles() devuelve COPIAS (correctness).
+        self._active_vehicles_cache: dict[int, dict] = {}
+
     def next_vehicle_id(self) -> int:
         """Genera y devuelve un ID único e incremental para cada vehículo nuevo."""
         self._vehicle_counter += 1
@@ -71,38 +76,38 @@ class SimulationState:
                 return False
         return True
 
+    def track_vehicle_enter(self, v, linea: int | None = None) -> None:
+        """Registra un vehículo nuevo en el caché diferencial."""
+        self._active_vehicles_cache[v.id] = {
+            "id": v.id,
+            "tipo": v.tipo.value,
+            "estado": v.estado.value,
+            "linea": linea,
+            "hora_llegada": round(v.hora_llegada, 2),
+            "hora_inicio_bloqueo": None,
+        }
+
+    def track_vehicle_update(self, v, linea: int | None = None) -> None:
+        """Actualiza el estado de un vehículo existente en el caché."""
+        entry = self._active_vehicles_cache.get(v.id)
+        if entry is not None:
+            entry["estado"] = v.estado.value
+            entry["linea"] = linea
+            entry["hora_inicio_bloqueo"] = (
+                round(v.hora_inicio_bloqueo, 2) if v.hora_inicio_bloqueo is not None else None
+            )
+
+    def track_vehicle_exit(self, vehicle_id: int) -> None:
+        """Elimina un vehículo del caché al retirarse del sistema."""
+        self._active_vehicles_cache.pop(vehicle_id, None)
+
     def snapshot_active_vehicles(self) -> list[dict]:
         """
-        Devuelve el estado de todos los vehículos activos en el sistema
-        (tanto en colas como en estaciones) como una lista de dicts estructurados.
+        Devuelve el estado de todos los vehículos activos en el sistema.
+        OPTIMIZACIÓN: Lee directamente el caché diferencial en O(n) trivial;
+        no recorre la cola ni las estaciones.
         """
-        entries: list[dict] = []
-
-        def _to_dict(v, linea: int | None = None) -> dict:
-            return {
-                "id": v.id,
-                "tipo": v.tipo.value,
-                "estado": v.estado.value,
-                "linea": linea,
-                "hora_llegada": round(v.hora_llegada, 2),
-                "hora_inicio_bloqueo": (
-                    round(v.hora_inicio_bloqueo, 2)
-                    if v.hora_inicio_bloqueo is not None
-                    else None
-                ),
-            }
-
-        # Vehículos en la cola de espera
-        for v in self.entry_queue.all_vehicles():
-            entries.append(_to_dict(v, linea=None))
-
-        # Vehículos en estaciones
-        for line in self.lines:
-            for station in (line.frenos, line.luces):
-                if station.current_vehicle is not None:
-                    entries.append(_to_dict(station.current_vehicle, linea=line.id))
-
-        return entries
+        return list(self._active_vehicles_cache.values())
 
     def snapshot_active_vehicles_as_json(self) -> str:
         """
