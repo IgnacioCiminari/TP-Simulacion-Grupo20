@@ -1,6 +1,6 @@
 # TP4 — Simulación Planta de Revisión Técnica Vehicular
 
-**Asignatura:** Simulación — UTN FRBA  
+**Asignatura:** Simulación — UTN FRC  
 **Grupo:** 20
 
 Sistema de simulación de eventos discretos (**DES**) para una planta de Revisión Técnica Vehicular (RTV). Incluye un motor de simulación en Python (FastAPI), una interfaz web interactiva (React + Vite) y configuración lista para Docker.
@@ -63,7 +63,7 @@ Esta es la forma **más simple y rápida** de levantar todo el sistema. No requi
 ### Paso 1 — Clonar el repositorio
 
 ```bash
-git clone <URL-del-repositorio>
+git clone https://github.com/IgnacioCiminari/TP-Simulacion-Grupo20.git
 cd TP-Simulacion-Grupo20
 ```
 

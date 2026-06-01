@@ -1,6 +1,6 @@
 # TP4 - Simulación Planta de Revisión Técnica Vehicular
 
-**Asignatura:** Simulación — UTN FRBA  
+**Asignatura:** Simulación — UTN FRC  
 **Grupo:** 20
 
 ---
