@@ -107,7 +107,7 @@ class SimulationState:
         OPTIMIZACIÓN: Lee directamente el caché diferencial en O(n) trivial;
         no recorre la cola ni las estaciones.
         """
-        return list(self._active_vehicles_cache.values())
+        return [v.copy() for v in self._active_vehicles_cache.values()]
 
     def snapshot_active_vehicles_as_json(self) -> str:
         """

@@ -221,6 +221,7 @@ El archivo CSV exportado (vía API) contiene todos los días en una única tabla
 | `Estado_Frenos_L{i}` | Estado de la estación de Frenos de la línea $i$ (`Libre`, `Ocupado`, `Bloqueado`) |
 | `Vehiculo_Frenos_L{i}` | ID del vehículo actualmente en la estación de Frenos |
 | `Fin_Atencion_Frenos_L{i}` | Minuto de fin de atención programado para la estación de Frenos |
+| `Inicio_Bloqueo_L{i}` | Minuto de reloj en el cual la estación de Frenos entró en estado bloqueado por no tener espacio en Luces |
 | `RND_Luces_L{i}` | Número uniforme $U(0,1)$ usado para el tiempo de Luces de la línea $i$ |
 | `Tiempo_Luces_L{i}` | Tiempo de revisión en Luces generado ($U(6,10)$) |
 | `Estado_Luces_L{i}` | Estado de la estación de Luces de la línea $i$ (`Libre`, `Ocupado`) |

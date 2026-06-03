@@ -4,7 +4,6 @@ import simulationService from "../services/simulation.service";
 import { toast } from "sonner";
 import { Clock, Car, Truck, SlidersHorizontal, Search, Download, Users, AlarmClock, Play, Wrench, CheckCircle2, DoorClosed, Flag, Zap, Check, Loader2, Lock, Box } from "lucide-react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers de tiempo
 // ─────────────────────────────────────────────────────────────────────────────
@@ -19,7 +18,7 @@ const TIME_COLS = new Set([
 
 function isTimeCol(key) {
     if (TIME_COLS.has(key)) return true;
-    return /^Fin_Atencion_(Frenos|Luces)_L\d+$/.test(key);
+    return /^(Fin_Atencion_(Frenos|Luces)|Inicio_Bloqueo)_L\d+$/.test(key);
 }
 
 // Columnas que se muestran en negrita
@@ -78,6 +77,7 @@ function buildColumnGroups(sampleKeys) {
                 `Estado_Frenos_L${lid}`,
                 `Vehiculo_Frenos_L${lid}`,
                 `Fin_Atencion_Frenos_L${lid}`,
+                `Inicio_Bloqueo_L${lid}`,
                 `RND_Luces_L${lid}`,
                 `Tiempo_Luces_L${lid}`,
                 `Estado_Luces_L${lid}`,
@@ -154,6 +154,7 @@ function getShortLabel(key) {
     if (/^Vehiculo_Luces_/.test(key)) return "Veh. Luces";
     if (/^Fin_Atencion_Frenos_/.test(key)) return "Fin Frenos";
     if (/^Fin_Atencion_Luces_/.test(key)) return "Fin Luces";
+    if (/^Inicio_Bloqueo_/.test(key)) return "Inicio Bloqueo";
     return key.replace(/_/g, " ");
 }
 
@@ -167,9 +168,10 @@ const CLIENT_COLORS = {
 };
 
 const ESTADO_COLORS = {
-    En_Frenos: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
-    En_Luces: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
-    En_Cola: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
+    "En Frenos": "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+    "En Luces": "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+    "Esperando": "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
+    "Bloqueado en Frenos": "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
 };
 
 function ClienteBadge({ cliente }) {
@@ -189,20 +191,19 @@ function ClientesCell({ clientes }) {
         <div>
             <button
                 onClick={(e) => { e.stopPropagation(); setExpanded(v => !v); }}
-                className="flex items-center gap-1 text-xs"
+                className="flex items-center gap-1 text-xs text-left"
             >
                 <span className="flex flex-wrap gap-0.5">
-                    {clientes.slice(0, 3).map(c => <ClienteBadge key={c.id} cliente={c} />)}
-                    {clientes.length > 3 && <span className="text-zinc-400">+{clientes.length - 3}</span>}
+                    {clientes.map(c => <ClienteBadge key={c.id} cliente={c} />)}
                 </span>
-                {expanded ? <ChevronDown className="h-3 w-3 text-zinc-400" /> : <ChevronRight className="h-3 w-3 text-zinc-400" />}
+                {expanded ? <ChevronDown className="h-3 w-3 text-zinc-400 shrink-0" /> : <ChevronRight className="h-3 w-3 text-zinc-400 shrink-0" />}
             </button>
             {expanded && (
                 <div className="mt-1.5 space-y-1">
                     {clientes.map(c => (
                         <div key={c.id} className="flex flex-wrap items-center gap-1.5 rounded-lg bg-zinc-50 px-2 py-1 dark:bg-zinc-800/50 text-xs">
                             <ClienteBadge cliente={c} />
-                            <span className={`rounded-full px-1.5 py-0.5 font-medium ${ESTADO_COLORS[c.estado] || ""}`}>{c.estado}</span>
+                            <span className={`rounded-full px-1.5 py-0.5 font-medium ${ESTADO_COLORS[c.estado] || "bg-zinc-100 text-zinc-500"}`}>{c.estado}</span>
                             {c.linea && <span className="text-zinc-400">L{c.linea}</span>}
                         </div>
                     ))}
@@ -336,7 +337,9 @@ function DataRow({ record, visibleKeys, timeMode, isSticky = false, rowIndex = -
                 return (
                     <td key={key} style={stickyStyle}
                         className={[
-                            "whitespace-nowrap border-r border-zinc-200 px-3 py-2 text-center align-middle text-xs text-zinc-700 last:border-r-0 dark:border-zinc-800 dark:text-zinc-300",
+                            key === "Clientes_Activos"
+                                ? "border-r border-zinc-200 px-3 py-2 text-left align-top text-xs text-zinc-700 last:border-r-0 dark:border-zinc-800 dark:text-zinc-300 min-w-[200px]"
+                                : "whitespace-nowrap border-r border-zinc-200 px-3 py-2 text-center align-middle text-xs text-zinc-700 last:border-r-0 dark:border-zinc-800 dark:text-zinc-300",
                             isStickyCol ? `${stickyTdBg} shadow-[2px_0_6px_-1px_rgba(0,0,0,0.15)]` : "",
                         ].join(" ")}>
                         <CellValue colKey={key} value={record[key]} timeMode={timeMode} />

@@ -40,13 +40,13 @@ _HEADER_FIXED = [
     "Cola_Camionetas",
 ]
 
-# Columnas por línea (se repiten para L1, L2, ... según num_lineas)
 _HEADER_PER_LINE = [
     "RND_Frenos_L{i}",
     "Tiempo_Frenos_L{i}",
     "Estado_Frenos_L{i}",
     "Vehiculo_Frenos_L{i}",
     "Fin_Atencion_Frenos_L{i}",
+    "Inicio_Bloqueo_L{i}",
     "RND_Luces_L{i}",
     "Tiempo_Luces_L{i}",
     "Estado_Luces_L{i}",
@@ -246,6 +246,7 @@ class MemoryExporter:
                 line.frenos.status_str,
                 v_frenos.id if v_frenos else None,
                 line.frenos.hora_fin_atencion,
+                v_frenos.hora_inicio_bloqueo if v_frenos else None,
                 row_context.get(k_rl),
                 row_context.get(k_tl),
                 line.luces.status_str,
@@ -291,7 +292,7 @@ class MemoryExporter:
             if val is None:
                 row_dict[h] = ""
             elif isinstance(val, float):
-                if "Reloj" in h or "Prox" in h or "Fin_Atencion" in h:
+                if "Reloj" in h or "Prox" in h or "Fin_Atencion" in h or "Inicio_Bloqueo" in h:
                     row_dict[h] = _FORMATTERS[2](val)
                 else:
                     row_dict[h] = _FORMATTERS[4](val)
