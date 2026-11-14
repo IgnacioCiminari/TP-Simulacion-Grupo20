@@ -1,20 +1,25 @@
+# Orquestación con el backend en Rust (Backend/).
+# La versión con el backend en Python (Api/) está en docker-compose.python.yml:
+#   docker compose -f docker-compose.python.yml up --build -d
 services:
   api:
     build:
-      context: ./Api
+      context: ./Backend
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
-      - ./Api/output:/app/output
+      - ./Backend/output:/app/output
     environment:
-      - PYTHONUNBUFFERED=1
+      - HOST=0.0.0.0
+      - PORT=8000
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8000/"]
+      # 127.0.0.1 y no localhost: en alpine localhost resuelve primero a ::1 (IPv6)
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 5s
 
   frontend:
     build:
@@ -26,6 +31,9 @@ services:
       - "80:80"
     environment:
       - VITE_API_URL=http://localhost:8000
+    depends_on:
+      api:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:80"]
       interval: 30s

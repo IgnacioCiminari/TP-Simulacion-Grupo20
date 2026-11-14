@@ -3,7 +3,7 @@
 **Asignatura:** Simulación — UTN FRC  
 **Grupo:** 20
 
-Sistema de simulación de eventos discretos (**DES**) para una planta de Revisión Técnica Vehicular (RTV). Incluye un motor de simulación en Python (FastAPI), una interfaz web interactiva (React + Vite) y configuración lista para Docker.
+Sistema de simulación de eventos discretos (**DES**) para una planta de Revisión Técnica Vehicular (RTV). Incluye un motor de simulación en Rust (`Backend/`, versión principal) y su versión original en Python (`Api/`, FastAPI), una interfaz web interactiva (React + Vite) y configuración lista para Docker.
 
 ---
 
@@ -23,7 +23,19 @@ Se modela la operación diaria de una planta RTV que atiende autos y camionetas 
 ```
 TP-Simulacion-Grupo20/
 │
-├── docker-compose.yml         # Orquestación de los dos servicios (API + Frontend)
+├── docker-compose.yml         # Orquestación: backend Rust (Backend/) + Frontend
+├── docker-compose.python.yml  # Orquestación alternativa: backend Python (Api/) + Frontend
+│
+├── Backend/                   # Backend en Rust — misma organización y misma API que Api/
+│   ├── Dockerfile             # Multi-stage (deps → build → alpine, binario estático ~16 MB)
+│   ├── Cargo.toml             # Dependencias (axum, tokio, rayon, serde)
+│   ├── src/api.rs             # Endpoints (mismo contrato JSON que api.py)
+│   ├── src/main.rs            # Servidor HTTP (puerto 8000)
+│   ├── src/bin/simular.rs     # Punto de entrada por consola (equivale a main.py)
+│   ├── src/{core,entities,events,stats}/  # Mismos módulos que Api/
+│   ├── tests/                 # Suite de pruebas (cargo test)
+│   ├── output/                # ← vector_de_estado.csv (montado como volumen)
+│   └── README.md              # Documentación técnica del backend Rust
 │
 ├── Api/                       # Backend — Motor de simulación + API REST (FastAPI + Python)
 │   ├── Dockerfile             # Imagen de producción (multi-stage, python:3.11-alpine)
@@ -69,7 +81,7 @@ cd TP-Simulacion-Grupo20
 
 ### Paso 2 — Primera vez: construir las imágenes y levantar
 
-Desde la **raíz del proyecto** (donde está el `docker-compose.yml`):
+Desde la **raíz del proyecto** (donde está el `docker-compose.yml`). Esto levanta el backend en **Rust**; para usar el backend en Python agregá `-f docker-compose.python.yml` a cada comando `docker-compose`:
 
 ```bash
 docker-compose up --build -d

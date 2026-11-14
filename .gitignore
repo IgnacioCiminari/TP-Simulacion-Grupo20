@@ -1,1 +1,5 @@
 Api/output/
+
+# Backend Rust
+Backend/target/
+Backend/output/

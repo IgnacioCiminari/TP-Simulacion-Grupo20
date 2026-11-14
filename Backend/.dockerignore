@@ -1,0 +1,8 @@
+# Artefactos de compilación y salidas locales
+target
+output
+
+# Archivos de entorno / editor
+.env
+.env.*
+*.md

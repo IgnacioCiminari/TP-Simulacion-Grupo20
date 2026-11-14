@@ -1,0 +1,5 @@
+# Artefactos de compilación de Cargo
+/target/
+
+# CSV generados por POST /simulacion/exportar
+/output/
